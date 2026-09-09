@@ -1,5 +1,7 @@
 package moe.fuqiuluo.mamu.floating.dialog
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -18,6 +20,7 @@ import kotlinx.coroutines.withContext
 import moe.fuqiuluo.mamu.R
 import moe.fuqiuluo.mamu.data.settings.getDialogOpacity
 import moe.fuqiuluo.mamu.databinding.DialogScriptBinding
+import moe.fuqiuluo.mamu.driver.FreezeManager
 import moe.fuqiuluo.mamu.driver.SearchEngine
 import moe.fuqiuluo.mamu.driver.WuwaDriver
 import moe.fuqiuluo.mamu.script.GgApiBridge
@@ -26,6 +29,7 @@ import moe.fuqiuluo.mamu.script.ScriptEndReason
 import moe.fuqiuluo.mamu.script.ScriptFsEntry
 import moe.fuqiuluo.mamu.script.ScriptHost
 import moe.fuqiuluo.mamu.script.ScriptLocalBrowser
+import moe.fuqiuluo.mamu.script.ScriptMemoryRange
 import moe.fuqiuluo.mamu.script.ScriptPaths
 import moe.fuqiuluo.mamu.script.ScriptResultItem
 import moe.fuqiuluo.mamu.script.ScriptUrlFetcher
@@ -152,7 +156,7 @@ class ScriptDialog(
             onToast = { message ->
                 mainHandler.post { notification.showWarning(message) }
             },
-            onWarn = { message -> appendOutput(message) },
+            onWarn = { message -> mainHandler.post { appendOutput(message) } },
             getResults = { maxCount ->
                 val total = SearchEngine.getTotalResultCount().toInt().coerceAtLeast(0)
                 val count = maxCount.coerceAtMost(total)
@@ -166,7 +170,15 @@ class ScriptDialog(
                 runCatching { WuwaDriver.getProcessInfo(WuwaDriver.currentBindPid).name }.getOrNull()
             },
             readMemory = { addr, size -> WuwaDriver.readMemory(addr, size) },
-            writeMemory = { addr, data -> WuwaDriver.writeMemory(addr, data) }
+            writeMemory = { addr, data -> WuwaDriver.writeMemory(addr, data) },
+            onGetResultsCount = {
+                SearchEngine.getTotalResultCount().toInt().coerceAtLeast(0)
+            },
+            onClearResults = { SearchEngine.clearSearchResults() },
+            onGetMemoryRanges = { filter -> listMemoryRanges(filter) },
+            onCopyText = { text -> copyText(text) },
+            onFreeze = { addr, bytes, typeId -> FreezeManager.addFrozen(addr, bytes, typeId) },
+            onUnfreeze = { addr -> FreezeManager.removeFrozen(addr) }
         )
         host.execute(
             source = source,
@@ -185,6 +197,29 @@ class ScriptDialog(
                 updateRunningState(false)
             }
         )
+    }
+
+    private fun copyText(text: String) {
+        mainHandler.post {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                ?: return@post
+            clipboard.setPrimaryClip(ClipData.newPlainText("mamu-script", text))
+        }
+    }
+
+    private fun listMemoryRanges(filter: String?): List<ScriptMemoryRange> {
+        if (!WuwaDriver.isProcessBound) return emptyList()
+        val regions = runCatching { WuwaDriver.queryMemRegionsWithRetry() }.getOrNull() ?: return emptyList()
+        return regions.map { region ->
+            ScriptMemoryRange(
+                start = region.start,
+                end = region.end,
+                name = region.name,
+                state = region.permissionString
+            )
+        }.filter { range ->
+            filter.isNullOrBlank() || range.name.contains(filter, ignoreCase = true)
+        }
     }
 
     private fun appendOutput(line: String) {
