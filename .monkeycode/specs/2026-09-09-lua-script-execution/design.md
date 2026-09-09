@@ -93,7 +93,7 @@ class ScriptHost(
 | `gg.getTargetInfo()` | 已绑定返回 `{pid, processName}`，否则 `nil` |
 | `gg.readValue(address, type)` | 读内存；失败返回 `nil` |
 | `gg.writeValue(address, value, type)` | 写内存；返回 boolean |
-| `gg.toast(message)` | 主线程 `NotificationOverlay.showSuccess` |
+| `gg.toast(message)` | 主线程 `NotificationOverlay.showWarning` |
 | `gg.getResults(maxCount)` | `SearchEngine.getResults(0, n)` 转 Lua 表 |
 | `gg.getSelectedResults()` | 使用启动时快照 |
 | `gg.makeRequest(url)` | GET http(s)，返回 `{code, url, content, error}` |

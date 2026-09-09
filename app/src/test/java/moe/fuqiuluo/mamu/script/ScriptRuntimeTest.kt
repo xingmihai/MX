@@ -92,6 +92,15 @@ class ScriptRuntimeTest : FunSpec({
         "print(1)".isBlank() shouldBe false
     }
 
+    test("gg.toast 把消息交给 onToast") {
+        val messages = mutableListOf<String>()
+        val api = fakeApi(onToast = { messages.add(it) })
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        globals.get("gg").get("toast").call(LuaValue.valueOf("hello toast"))
+        messages shouldBe listOf("hello toast")
+    }
+
     test("getResults 截断到 maxCount") {
         val items = (1..5).map {
             ScriptResultItem(address = it.toLong(), value = it.toString(), flags = ScriptTypeFlags.DWORD)
@@ -228,12 +237,13 @@ private fun fakeApi(
     bound: Boolean = true,
     results: List<ScriptResultItem> = emptyList(),
     selected: List<ScriptResultItem> = emptyList(),
+    onToast: (String) -> Unit = {},
     readMemory: (Long, Int) -> ByteArray? = { _, _ -> null },
     writeMemory: (Long, ByteArray) -> Boolean = { _, _ -> false }
 ): GgApiBridge {
     return GgApiBridge(
         selectedResults = selected,
-        onToast = {},
+        onToast = onToast,
         onWarn = {},
         getResults = { maxCount -> results.take(maxCount) },
         isProcessBound = { bound },

@@ -149,7 +149,9 @@ class ScriptDialog(
         updateRunningState(true)
         val api = GgApiBridge(
             selectedResults = getSelectedResults(),
-            onToast = { message -> notification.showSuccess(message) },
+            onToast = { message ->
+                mainHandler.post { notification.showWarning(message) }
+            },
             onWarn = { message -> appendOutput(message) },
             getResults = { maxCount ->
                 val total = SearchEngine.getTotalResultCount().toInt().coerceAtLeast(0)
