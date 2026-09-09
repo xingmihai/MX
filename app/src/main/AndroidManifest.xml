@@ -51,13 +51,15 @@
         android:supportsRtl="true"
         android:extractNativeLibs="true"
         android:largeHeap="true"
+        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.MX">
 
         <!-- 权限设置启动页面 -->
         <activity
             android:name=".PermissionSetupActivity"
             android:exported="true"
-            android:theme="@style/Theme.MX">
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.MX">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

@@ -184,6 +184,22 @@ class ScriptRuntimeTest : FunSpec({
         ScriptHost.parseLine("script:3: unexpected symbol") shouldBe 3
         ScriptHost.parseLine("no line") shouldBe null
     }
+
+    test("路径规范化拒绝穿越并支持上级") {
+        ScriptPaths.normalize("/sdcard/../Download") shouldBe "/Download"
+        ScriptPaths.normalize("/sdcard/Mamu/./scripts") shouldBe "/sdcard/Mamu/scripts"
+        ScriptPaths.parent("/sdcard/Mamu") shouldBe "/sdcard"
+        ScriptPaths.parent("/") shouldBe null
+        ScriptPaths.child("/sdcard", "demo.lua") shouldBe "/sdcard/demo.lua"
+    }
+
+    test("URL 仅接受 http 与 https") {
+        ScriptUrlFetcher.validate("") shouldBe "URL 为空"
+        ScriptUrlFetcher.validate("ftp://example.com/a.lua") shouldBe "仅支持 http 或 https"
+        ScriptUrlFetcher.validate("file:///sdcard/a.lua") shouldBe "仅支持 http 或 https"
+        ScriptUrlFetcher.validate("https://example.com/a.lua") shouldBe null
+        ScriptUrlFetcher.validate("http://example.com/a.lua") shouldBe null
+    }
 })
 
 private fun fakeApi(

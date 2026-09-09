@@ -5,7 +5,7 @@ Updated: 2026-09-09
 
 ## Description
 
-在搜索页工具栏「执行脚本」接入第一版 Lua 运行时。用户在悬浮窗对话框中编辑脚本，由 Luaj 在后台线程执行；脚本通过 `gg.*` 读写当前绑定进程内存、读取搜索结果，并通过 `print` / `gg.toast` 反馈。本版本不实现 ImGui、搜索/精炼 API。
+在搜索页工具栏「执行脚本」接入第一版 Lua 运行时。用户在悬浮窗对话框中浏览本地目录选择 `.lua`，或输入 http(s) URL 下载后运行；由 Luaj 在后台线程执行。脚本通过 `gg.*` 读写当前绑定进程内存、读取搜索结果，并通过 `print` / `gg.toast` 反馈。本版本不实现 ImGui、搜索/精炼 API。
 
 ## Architecture
 
@@ -13,7 +13,8 @@ Updated: 2026-09-09
 graph TD
     A["SearchController 执行脚本按钮"] --> B["ScriptDialog"]
     B --> C["ScriptHost"]
-    B --> D["ScriptRepository"]
+    B --> D["ScriptLocalBrowser"]
+    B --> N["ScriptUrlFetcher"]
     C --> E["SandboxGlobals"]
     C --> F["GgApi"]
     F --> G["WuwaDriver"]
@@ -21,11 +22,11 @@ graph TD
     F --> I["SearchResultAdapter 选中快照"]
     F --> J["NotificationOverlay"]
     C --> K["输出回调到 ScriptDialog"]
-    D --> L["filesDir/scripts"]
-    D --> M["MMKV 草稿"]
+    D --> L["RootFileSystem 或 java.io.File"]
+    D --> M["MMKV 上次目录"]
 ```
 
-点击「执行脚本」打开 `ScriptDialog`。运行时 `ScriptHost` 创建沙箱 `Globals`，注入 `gg` 表与自定义 `print`。内存读写走现有 `WuwaDriver` 与 `ValueTypeUtils`。搜索结果走 `SearchEngine.getResults`；勾选项由 Controller 在启动执行前做快照传入。脚本文件存应用私有目录，编辑草稿用 MMKV。
+点击「执行脚本」打开 `ScriptDialog`。对话框显示当前路径、子目录与 `.lua` 列表，以及 URL 输入框。点 `.lua` 读取后交给 `ScriptHost`；点「运行链接」下载 http(s) 内容后执行。运行时 `ScriptHost` 创建沙箱 `Globals`，注入 `gg` 表与自定义 `print`。内存读写走现有 `WuwaDriver` 与 `ValueTypeUtils`。搜索结果走 `SearchEngine.getResults`；勾选项由 Controller 在启动执行前做快照传入。上次浏览目录用 MMKV 保存。
 
 ## Components and Interfaces
 
@@ -33,7 +34,7 @@ graph TD
 
 位置：`app/src/main/java/moe/fuqiuluo/mamu/floating/dialog/ScriptDialog.kt`
 
-继承 `BaseDialog`。布局：标题、多行编辑框、只读输出区、载入/保存/运行/停止/关闭。编辑框使用系统输入法（脚本需要字母与符号）。打开时从 MMKV 恢复草稿；文本变化时写回草稿。关闭时调用 `ScriptHost.stop()`。
+继承 `BaseDialog`。布局：标题、URL 输入框与运行链接、当前路径与上级按钮、目录/文件列表、只读输出区、停止/关闭。打开时从 MMKV 恢复上次目录，默认 `/sdcard`。点击目录进入，点击 `.lua` 读取并运行。关闭时调用 `ScriptHost.stop()`。
 
 `SearchController.setupToolbar` 中「执行脚本」改为 `showScriptDialog()`，传入：
 
@@ -104,17 +105,13 @@ class ScriptHost(
 
 结果表项：`{address = "0x...", value = "...", flags = TYPE_DWORD}`。`address` 用十六进制字符串。
 
-### ScriptRepository
+### ScriptLocalBrowser / ScriptUrlFetcher
 
-位置：`app/src/main/java/moe/fuqiuluo/mamu/script/ScriptRepository.kt`
+位置：`app/src/main/java/moe/fuqiuluo/mamu/script/ScriptLocalBrowser.kt`、`ScriptUrlFetcher.kt`、`ScriptPaths.kt`
 
-- 目录：`context.filesDir/scripts`
-- `list(): List<String>` 文件名
-- `save(name: String, content: String)`
-- `load(name: String): String`
-- 草稿：MMKV key `script_editor_draft`
-
-保存时若文件名不含 `.lua` 则追加。非法文件名（路径分隔符）拒绝保存。
+- 本地列表：当前目录的子目录 + `.lua` 文件，优先 `RootFileSystem`
+- 路径规范化：去掉 `.`，处理 `..`，默认 `/sdcard`
+- URL：仅 `http`/`https`，超时 10s/15s，上限 1MB
 
 ### SearchController 改动
 
@@ -164,13 +161,14 @@ Type Flag 映射：
 
 | 场景 | 处理 |
 |---|---|
-| 脚本为空 | 不启动 Host，输出「脚本为空」 |
+| 本地文件为空 | 不启动 Host，输出「脚本为空」 |
+| URL 非法 | 不下载，输出原因 |
+| 下载失败 / 超过 1MB | 不启动 Host，输出原因 |
 | 语法/运行时错误 | 停止 Host，输出 `错误: 行x: message` |
 | 未绑定进程读写下 | 返回 `nil` / `false`，输出一行警告 |
 | 用户停止 | 2 秒内结束，输出「已停止」 |
 | 超过 60 秒 | 输出「执行超时」 |
-| 保存空文件名 | 提示并保持对话框 |
-| 载入目录为空 | 提示「没有已保存的脚本」 |
+| 目录打开失败 | 提示「无法打开目录」 |
 | Luaj 初始化失败 | 输出「脚本引擎不可用」 |
 
 ## Test Strategy
@@ -182,7 +180,8 @@ Type Flag 映射：
 3. 沙箱：源码访问 `luajava` / `io` / `os` 得到 LuaError
 4. 空脚本拒绝执行
 5. `getResults` 截断到 `maxCount`
-6. 文件名消毒：拒绝 `../` 与路径分隔符
+6. 路径规范化：处理 `..` 与上级目录
+7. URL 校验：仅 `http`/`https`
 
 不在 JVM 单测中覆盖 `WuwaDriver` 真实读写。
 

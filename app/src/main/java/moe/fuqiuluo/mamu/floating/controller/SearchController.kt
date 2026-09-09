@@ -1407,6 +1407,7 @@ class SearchController(
         scriptDialog = ScriptDialog(
             context = context,
             notification = notification,
+            coroutineScope = coroutineScope,
             getSelectedResults = {
                 searchResultAdapter.getSelectedItems().map { it.toScriptResultItem() }
             }

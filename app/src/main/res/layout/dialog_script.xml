@@ -26,46 +26,76 @@
         android:gravity="center_vertical"
         android:orientation="horizontal">
 
-        <com.google.android.material.textview.MaterialTextView
-            style="@style/FloatingText.Body"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="@dimen/floating_spacing_sm"
-            android:text="@string/label_file_name" />
-
         <EditText
-            android:id="@+id/input_file_name"
+            android:id="@+id/input_url"
             android:layout_width="0dp"
             android:layout_height="@dimen/floating_height_button_sm"
             android:layout_weight="1"
             android:background="@android:color/transparent"
-            android:hint="@string/script_hint_file_name"
-            android:inputType="text"
+            android:hint="@string/script_hint_url"
+            android:inputType="textUri"
             android:paddingStart="@dimen/floating_spacing_xs"
             android:paddingEnd="@dimen/floating_spacing_xs"
             android:textColor="@color/floating_text_primary"
             android:textColorHint="@color/floating_text_secondary"
             android:textSize="@dimen/floating_text_body" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_run_url"
+            style="@style/FloatingButton.Text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/script_button_run_url" />
     </LinearLayout>
 
-    <EditText
-        android:id="@+id/input_script"
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="160dp"
+        android:layout_height="wrap_content"
         android:layout_marginBottom="@dimen/floating_spacing_sm"
-        android:background="@drawable/bg_transparent_border"
-        android:gravity="top|start"
-        android:hint="@string/script_hint"
-        android:inputType="textMultiLine|textNoSuggestions"
-        android:padding="@dimen/floating_spacing_sm"
-        android:textColor="@color/floating_text_primary"
-        android:textColorHint="@color/floating_text_secondary"
-        android:textSize="@dimen/floating_text_caption"
-        android:typeface="monospace" />
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <ImageView
+            android:id="@+id/btn_up"
+            android:layout_width="@dimen/floating_icon_lg"
+            android:layout_height="@dimen/floating_icon_lg"
+            android:background="@drawable/ripple_item_background"
+            android:contentDescription="@string/script_button_up"
+            android:padding="@dimen/floating_spacing_xs"
+            android:src="@drawable/icon_arrow_left_alt_24px" />
+
+        <TextView
+            android:id="@+id/path_text"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="start"
+            android:paddingStart="@dimen/floating_spacing_sm"
+            android:paddingEnd="@dimen/floating_spacing_sm"
+            android:singleLine="true"
+            android:textColor="@color/floating_text_primary"
+            android:textSize="@dimen/floating_text_caption" />
+    </LinearLayout>
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/entry_list"
+        android:layout_width="match_parent"
+        android:layout_height="180dp"
+        android:layout_marginBottom="@dimen/floating_spacing_sm" />
+
+    <com.google.android.material.textview.MaterialTextView
+        android:id="@+id/empty_state"
+        style="@style/FloatingText.Body"
+        android:layout_width="match_parent"
+        android:layout_height="180dp"
+        android:gravity="center"
+        android:text="@string/script_no_local"
+        android:textColor="@color/floating_text_secondary"
+        android:visibility="gone" />
 
     <ScrollView
         android:layout_width="match_parent"
-        android:layout_height="120dp"
+        android:layout_height="100dp"
         android:layout_marginBottom="@dimen/floating_spacing_md"
         android:background="@drawable/bg_transparent_border"
         android:fillViewport="true">
@@ -88,33 +118,12 @@
         android:orientation="horizontal">
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_load"
-            style="@style/FloatingButton.Text.White"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/script_button_load" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_save"
-            style="@style/FloatingButton.Text.White"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/script_button_save" />
-
-        <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_stop"
             style="@style/FloatingButton.Text.White"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:enabled="false"
             android:text="@string/script_button_stop" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_run"
-            style="@style/FloatingButton.Text"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/script_button_run" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_close"

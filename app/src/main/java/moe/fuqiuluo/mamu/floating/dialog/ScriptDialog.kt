@@ -3,10 +3,18 @@ package moe.fuqiuluo.mamu.floating.dialog
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import android.text.Editable
-import android.text.TextWatcher
 import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.ImageView
+import android.widget.TextView
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.tencent.mmkv.MMKV
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import moe.fuqiuluo.mamu.R
 import moe.fuqiuluo.mamu.data.settings.getDialogOpacity
 import moe.fuqiuluo.mamu.databinding.DialogScriptBinding
@@ -15,22 +23,26 @@ import moe.fuqiuluo.mamu.driver.WuwaDriver
 import moe.fuqiuluo.mamu.script.GgApiBridge
 import moe.fuqiuluo.mamu.script.GgApiBridge.Companion.toScriptResultItem
 import moe.fuqiuluo.mamu.script.ScriptEndReason
+import moe.fuqiuluo.mamu.script.ScriptFsEntry
 import moe.fuqiuluo.mamu.script.ScriptHost
-import moe.fuqiuluo.mamu.script.ScriptRepository
+import moe.fuqiuluo.mamu.script.ScriptLocalBrowser
+import moe.fuqiuluo.mamu.script.ScriptPaths
 import moe.fuqiuluo.mamu.script.ScriptResultItem
+import moe.fuqiuluo.mamu.script.ScriptUrlFetcher
 import moe.fuqiuluo.mamu.widget.NotificationOverlay
-import moe.fuqiuluo.mamu.widget.simpleSingleChoiceDialog
 
 class ScriptDialog(
     context: Context,
     private val notification: NotificationOverlay,
-    private val getSelectedResults: () -> List<ScriptResultItem>,
-    private val repository: ScriptRepository = ScriptRepository(context)
+    private val coroutineScope: CoroutineScope,
+    private val getSelectedResults: () -> List<ScriptResultItem>
 ) : BaseDialog(context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val host = ScriptHost(poster = { mainHandler.post(it) })
     private lateinit var binding: DialogScriptBinding
+    private lateinit var adapter: EntryAdapter
     private var outputCleared = false
+    private var currentPath = ScriptPaths.DEFAULT_DIR
 
     val isRunning: Boolean
         get() = host.isRunning
@@ -41,37 +53,92 @@ class ScriptDialog(
 
         val mmkv = MMKV.defaultMMKV()
         binding.rootContainer.background?.alpha = (mmkv.getDialogOpacity() * 255).toInt()
+        currentPath = ScriptPaths.normalize(
+            mmkv.decodeString(LAST_DIR_KEY, ScriptPaths.DEFAULT_DIR) ?: ScriptPaths.DEFAULT_DIR
+        )
 
-        val draft = repository.loadDraft()
-        if (draft.isNotEmpty()) {
-            binding.inputScript.setText(draft)
-        }
-
-        binding.inputScript.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
-            override fun afterTextChanged(s: Editable?) {
-                repository.saveDraft(s?.toString().orEmpty())
+        adapter = EntryAdapter { entry ->
+            if (host.isRunning) return@EntryAdapter
+            if (entry.isDirectory) {
+                openDirectory(entry.path)
+            } else {
+                runLocalFile(entry.path)
             }
-        })
+        }
+        binding.entryList.layoutManager = LinearLayoutManager(context)
+        binding.entryList.adapter = adapter
 
         if (!WuwaDriver.isProcessBound) {
             appendOutput(context.getString(R.string.script_unbound))
         }
 
-        binding.btnRun.setOnClickListener { runScript() }
+        binding.btnUp.setOnClickListener {
+            ScriptPaths.parent(currentPath)?.let { openDirectory(it) }
+        }
+        binding.btnRunUrl.setOnClickListener { runUrl() }
         binding.btnStop.setOnClickListener { host.stop() }
-        binding.btnSave.setOnClickListener { saveScript() }
-        binding.btnLoad.setOnClickListener { loadScript() }
         binding.btnClose.setOnClickListener {
             onCancel?.invoke()
             dismiss()
         }
         updateRunningState(false)
+        openDirectory(currentPath)
     }
 
-    private fun runScript() {
-        val source = binding.inputScript.text?.toString().orEmpty()
+    private fun openDirectory(path: String) {
+        val target = ScriptPaths.normalize(path)
+        coroutineScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { ScriptLocalBrowser.list(target) }
+            }
+            result.onSuccess { entries ->
+                currentPath = target
+                MMKV.defaultMMKV().encode(LAST_DIR_KEY, currentPath)
+                binding.pathText.text = currentPath
+                adapter.setEntries(entries)
+                val empty = entries.isEmpty()
+                binding.entryList.visibility = if (empty) View.GONE else View.VISIBLE
+                binding.emptyState.visibility = if (empty) View.VISIBLE else View.GONE
+            }.onFailure { error ->
+                notification.showWarning(error.message ?: context.getString(R.string.script_dir_failed))
+            }
+        }
+    }
+
+    private fun runLocalFile(path: String) {
+        coroutineScope.launch {
+            val source = withContext(Dispatchers.IO) {
+                runCatching { ScriptLocalBrowser.read(path) }
+            }.getOrElse { error ->
+                appendOutput(error.message ?: context.getString(R.string.script_read_failed))
+                return@launch
+            }
+            appendOutput(context.getString(R.string.script_running_local, path))
+            executeSource(source)
+        }
+    }
+
+    private fun runUrl() {
+        val url = binding.inputUrl.text?.toString().orEmpty()
+        val invalid = ScriptUrlFetcher.validate(url)
+        if (invalid != null) {
+            appendOutput(invalid)
+            return
+        }
+        if (host.isRunning) return
+        coroutineScope.launch {
+            appendOutput(context.getString(R.string.script_downloading))
+            val source = withContext(Dispatchers.IO) {
+                runCatching { ScriptUrlFetcher.fetch(url) }
+            }.getOrElse { error ->
+                appendOutput(error.message ?: context.getString(R.string.script_download_failed))
+                return@launch
+            }
+            executeSource(source)
+        }
+    }
+
+    private fun executeSource(source: String) {
         if (source.isBlank()) {
             appendOutput(context.getString(R.string.script_empty))
             return
@@ -118,43 +185,6 @@ class ScriptDialog(
         )
     }
 
-    private fun saveScript() {
-        val source = binding.inputScript.text?.toString().orEmpty()
-        if (source.isBlank()) {
-            appendOutput(context.getString(R.string.script_empty))
-            return
-        }
-        val fileName = binding.inputFileName.text?.toString().orEmpty()
-        runCatching {
-            repository.save(fileName, source)
-        }.onSuccess { saved ->
-            binding.inputFileName.setText(saved)
-            notification.showSuccess(context.getString(R.string.script_saved, saved))
-        }.onFailure {
-            notification.showWarning(context.getString(R.string.script_invalid_file_name))
-        }
-    }
-
-    private fun loadScript() {
-        val files = repository.list()
-        if (files.isEmpty()) {
-            notification.showWarning(context.getString(R.string.script_no_saved))
-            return
-        }
-        context.simpleSingleChoiceDialog(
-            title = context.getString(R.string.script_load_title),
-            options = files.toTypedArray(),
-            onSingleChoice = { index ->
-                val name = files[index]
-                runCatching { repository.load(name) }.onSuccess { content ->
-                    binding.inputFileName.setText(name)
-                    binding.inputScript.setText(content)
-                    repository.saveDraft(content)
-                }
-            }
-        )
-    }
-
     private fun appendOutput(line: String) {
         if (!::binding.isInitialized) return
         val current = binding.outputText.text?.toString().orEmpty()
@@ -171,20 +201,73 @@ class ScriptDialog(
 
     private fun updateRunningState(running: Boolean) {
         if (!::binding.isInitialized) return
-        binding.btnRun.isEnabled = !running
+        binding.btnRunUrl.isEnabled = !running
         binding.btnStop.isEnabled = running
-        binding.inputScript.isEnabled = !running
+        binding.inputUrl.isEnabled = !running
+        binding.btnUp.isEnabled = !running
+        binding.entryList.isEnabled = !running
     }
 
     fun release() {
         host.stop()
-        if (::binding.isInitialized) {
-            repository.saveDraft(binding.inputScript.text?.toString().orEmpty())
-        }
     }
 
     override fun dismiss() {
         release()
         super.dismiss()
+    }
+
+    private class EntryAdapter(
+        private val onClick: (ScriptFsEntry) -> Unit
+    ) : RecyclerView.Adapter<EntryAdapter.ViewHolder>() {
+        private val entries = mutableListOf<ScriptFsEntry>()
+
+        fun setEntries(items: List<ScriptFsEntry>) {
+            entries.clear()
+            entries.addAll(items)
+            notifyDataSetChanged()
+        }
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val view = LayoutInflater.from(parent.context)
+                .inflate(R.layout.item_script_entry, parent, false)
+            return ViewHolder(view)
+        }
+
+        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+            holder.bind(entries[position], onClick)
+        }
+
+        override fun getItemCount(): Int = entries.size
+
+        class ViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
+            private val icon: ImageView = itemView.findViewById(R.id.entry_icon)
+            private val name: TextView = itemView.findViewById(R.id.entry_name)
+            private val meta: TextView = itemView.findViewById(R.id.entry_meta)
+
+            fun bind(entry: ScriptFsEntry, onClick: (ScriptFsEntry) -> Unit) {
+                name.text = entry.name
+                if (entry.isDirectory) {
+                    icon.setImageResource(R.drawable.icon_folder_24px)
+                    meta.text = itemView.context.getString(R.string.script_entry_dir)
+                } else {
+                    icon.setImageResource(R.drawable.icon_list_24px)
+                    meta.text = formatSize(entry.size)
+                }
+                itemView.setOnClickListener { onClick(entry) }
+            }
+
+            private fun formatSize(size: Long): String {
+                return when {
+                    size < 1024 -> "$size B"
+                    size < 1024 * 1024 -> "${size / 1024} KB"
+                    else -> "${size / (1024 * 1024)} MB"
+                }
+            }
+        }
+    }
+
+    companion object {
+        private const val LAST_DIR_KEY = "script_browser_last_dir"
     }
 }

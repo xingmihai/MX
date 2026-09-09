@@ -2,7 +2,7 @@
 
 ## Introduction
 
-在搜索页工具栏点击「执行脚本」后，用户可以编写并运行 Lua 脚本，对当前已绑定进程执行内存读写、搜索结果遍历等自动化操作。第一版覆盖：脚本编辑、运行、停止、输出展示、脚本持久化、`gg.*` 兼容读写 API。ImGui 脚本界面、`gg.searchNumber` / `gg.refineNumber` 不在本版本范围内。
+在搜索页工具栏点击「执行脚本」后，用户从本地目录选择 `.lua` 文件运行，或输入 http(s) URL 下载后运行。脚本对当前已绑定进程执行内存读写、搜索结果遍历等自动化操作。第一版覆盖：本地目录浏览、URL 运行、停止、输出展示、`gg.*` 兼容读写 API。ImGui 脚本界面、`gg.searchNumber` / `gg.refineNumber` 不在本版本范围内。
 
 ## Glossary
 
@@ -13,31 +13,34 @@
 - **Script Host**: 在独立线程中执行 Script 的 Luaj 运行时
 - **Script API**: 以 `gg` 全局表暴露给 Script 的函数集合
 - **Script Output**: 脚本通过 `print` 产生的文本
-- **Saved Script**: 持久化在应用私有目录 `scripts/` 中的 `.lua` 文件
+- **Local Script**: 设备存储中的 `.lua` 文件
+- **Remote Script URL**: 以 `http` 或 `https` 开头的脚本下载地址
 - **Type Flag**: 与 GameGuardian 对齐的数值类型常量，例如 `gg.TYPE_DWORD`
 
 ## Requirements
 
 ### Requirement 1: 打开脚本对话框
 
-**User Story:** AS User, I want 点击「执行脚本」打开编辑器, so that 我能编写或选择脚本
+**User Story:** AS User, I want 点击「执行脚本」打开选择界面, so that 我能从本地或 URL 运行脚本
 
 #### Acceptance Criteria
 
 1. WHEN User 点击搜索页工具栏「执行脚本」, THE System SHALL 显示脚本对话框
-2. WHILE 脚本对话框可见, THE System SHALL 展示脚本编辑区、输出区、运行按钮、停止按钮、保存按钮、载入按钮、关闭按钮
+2. WHILE 脚本对话框可见, THE System SHALL 展示当前路径、目录条目列表、URL 输入框、运行链接按钮、停止按钮、关闭按钮、输出区
 3. IF 当前未绑定进程, THE System SHALL 仍打开脚本对话框，并在输出区显示「未绑定进程」提示
 
-### Requirement 2: 编辑与运行脚本
+### Requirement 2: 本地目录浏览与运行
 
-**User Story:** AS User, I want 输入 Lua 并立即运行, so that 我能自动化内存操作
+**User Story:** AS User, I want 看到当前路径并自己选择文件, so that 我能运行本地 Lua 脚本
 
 #### Acceptance Criteria
 
-1. WHEN User 点击运行按钮且编辑区包含非空文本, THE System SHALL 在后台线程启动 Script Host 执行该文本
-2. WHILE Script Host 正在运行, THE System SHALL 将运行按钮置为不可用，并将停止按钮置为可用
-3. IF 编辑区文本为空, THE System SHALL 拒绝启动执行，并在输出区显示「脚本为空」
-4. WHEN Script 正常结束, THE System SHALL 在输出区追加「执行完成」并恢复运行按钮可用
+1. WHEN 脚本对话框打开, THE System SHALL 列出当前目录下的子目录与 `.lua` 文件
+2. WHEN User 点击子目录, THE System SHALL 进入该目录并刷新列表与路径显示
+3. WHEN User 点击上级目录按钮, THE System SHALL 显示父目录内容
+4. WHEN User 点击 `.lua` 文件, THE System SHALL 读取该文件并在后台线程启动 Script Host
+5. IF 当前目录没有子目录且没有 `.lua` 文件, THE System SHALL 显示空目录提示
+6. WHEN Script 正常结束, THE System SHALL 在输出区追加「执行完成」并恢复运行链接按钮可用
 
 ### Requirement 3: 停止脚本
 
@@ -46,7 +49,7 @@
 #### Acceptance Criteria
 
 1. WHEN User 点击停止按钮且 Script Host 正在运行, THE System SHALL 在 2 秒内请求 Script Host 中断
-2. WHEN Script Host 因停止请求退出, THE System SHALL 在输出区追加「已停止」并恢复运行按钮可用
+2. WHEN Script Host 因停止请求退出, THE System SHALL 在输出区追加「已停止」并恢复运行链接按钮可用
 3. IF Script Host 未在运行, THE System SHALL 保持停止按钮不可用
 
 ### Requirement 4: 脚本 API
@@ -75,16 +78,16 @@
 2. IF Script 连续运行超过 60 秒且 User 未点击停止, THE System SHALL 请求中断 Script Host，并在输出区显示「执行超时」
 3. IF Script 调用未声明的 API, THE System SHALL 将调用视为运行时错误并停止该 Script
 
-### Requirement 6: 脚本持久化
+### Requirement 6: URL 运行脚本
 
-**User Story:** AS User, I want 保存和载入脚本, so that 常用脚本不用每次重写
+**User Story:** AS User, I want 输入链接运行脚本, so that 我不用把文件拷到手机
 
 #### Acceptance Criteria
 
-1. WHEN User 点击保存且编辑区非空, THE System SHALL 将当前文本写入应用私有目录 `scripts/` 下的 `.lua` 文件
-2. WHEN User 点击载入, THE System SHALL 列出 `scripts/` 中的 `.lua` 文件供选择
-3. WHEN User 选择一个 Saved Script, THE System SHALL 用该文件内容替换编辑区文本
-4. WHILE 应用重启后, THE System SHALL 在再次打开脚本对话框时恢复上次编辑区文本
+1. WHEN User 点击运行链接且 URL 以 `http` 或 `https` 开头, THE System SHALL 下载该地址内容并启动 Script Host
+2. IF URL 为空或协议不是 `http`/`https`, THE System SHALL 拒绝下载，并在输出区显示原因
+3. IF 下载失败、内容为空或超过 1MB, THE System SHALL 拒绝执行，并在输出区显示原因
+4. WHILE 应用再次打开脚本对话框, THE System SHALL 恢复上次浏览的本地目录路径
 
 ### Requirement 7: 安全边界
 
