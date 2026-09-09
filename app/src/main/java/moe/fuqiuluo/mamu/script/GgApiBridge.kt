@@ -117,7 +117,17 @@ class GgApiBridge(
 
     private inner class MakeRequest : OneArgFunction() {
         override fun call(url: LuaValue): LuaValue {
-            val result = ScriptUrlFetcher.request(url.tojstring())
+            if (url.isnil()) {
+                throw org.luaj.vm2.LuaError("gg.makeRequest: URL 为空")
+            }
+            val raw = url.tojstring()
+            if (raw.isBlank() || raw == "nil") {
+                throw org.luaj.vm2.LuaError("gg.makeRequest: URL 为空")
+            }
+            val result = ScriptUrlFetcher.request(raw)
+            if (result.error != null) {
+                onWarn(result.error)
+            }
             val table = LuaTable()
             table.set("code", result.code)
             table.set("url", result.url)

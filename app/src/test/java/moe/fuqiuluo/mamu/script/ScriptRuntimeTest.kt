@@ -79,6 +79,14 @@ class ScriptRuntimeTest : FunSpec({
         table.get("code").toint() shouldBe 0
     }
 
+    test("makeRequest 空 URL 抛出错误") {
+        val globals = SandboxGlobals.create(onPrint = {})
+        fakeApi().install(globals)
+        runCatching {
+            globals.get("gg").get("makeRequest").call(LuaValue.NIL)
+        }.exceptionOrNull().shouldNotBeNull().message.shouldContain("URL")
+    }
+
     test("空脚本由调用方拒绝：空白源码长度为 0") {
         "   \n".isBlank() shouldBe true
         "print(1)".isBlank() shouldBe false
