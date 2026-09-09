@@ -1,123 +1,113 @@
-name: Android Release Build
+name: Build APK
 
 on:
   push:
-    branches: [ master ]
-    paths:
-      - '**.rs'
-      - '**.kt'
-      - '**.java'
-      - '**.gradle'
-      - '**.gradle.kts'
-      - 'gradle/**'
-      - 'app/src/main/rust/**'
-      - '.github/workflows/**'
+    branches: [master, main]
+    tags: ["v*"]
+  pull_request:
+    branches: [master, main]
   workflow_dispatch:
+    inputs:
+      release:
+        description: "构建 Release APK（需先配置签名 secrets）"
+        type: boolean
+        default: false
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
 
 jobs:
-  build-release:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
-    - name: Free Disk Space
-      uses: jlumbroso/free-disk-space@main
-      with:
-        tool-cache: false
-        android: false
-        dotnet: true
-        haskell: true
-        large-packages: true
-        docker-images: true
-        swap-storage: true
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # versionName 依赖 git rev-list --count，浅克隆会算成 1
+          submodules: recursive
 
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
-    - name: Setup Protocol Buffers compiler
-      uses: arduino/setup-protoc@v3
-      with:
-        version: '33.x'
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install SDK & build-tools
+        run: |
+          sdkmanager --install "platforms;android-36" "build-tools;35.0.0" "platform-tools"
+          yes | sdkmanager --licenses > /dev/null || true
 
-    - name: Setup Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        toolchain: stable
+      - name: Install NDK
+        run: sdkmanager --install "ndk;27.2.12479018"
 
-    - name: Install Rust targets
-      run: |
-        rustup target add aarch64-linux-android
-        rustup target add x86_64-linux-android
+      - name: Export NDK path
+        run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
-    - name: Setup Android NDK
-      id: setup-ndk
-      uses: nttld/setup-ndk@main
-      with:
-        ndk-version: r26d
-        add-to-path: true
-        link-to-sdk: true
+      - name: Set up Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup target add aarch64-linux-android
+          cargo --version
 
-    - name: Set NDK environment variables
-      run: |
-        echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
-        echo "NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src/main/rust
 
-    - name: Cache Gradle packages
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-        restore-keys: |
-          ${{ runner.os }}-gradle-
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
-    - name: Cache Cargo registry
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-registry-
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
 
-    - name: Cache Cargo build (release)
-      uses: actions/cache@v4
-      with:
-        path: |
-          app/src/main/rust/target
-        key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-release-
+      - name: Prepare release keystore
+        if: ${{ github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release == 'true') }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        id: keystore
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            mkdir -p app/keystore
+            echo "$KEYSTORE_BASE64" | base64 -d > app/keystore/release.keystore
+            echo "signing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::未配置签名 secrets，回退为 Debug 构建"
+            echo "signing=false" >> "$GITHUB_OUTPUT"
+          fi
 
-    - name: Clean Rust incremental builds
-      run: |
-        find app/src/main/rust -type d -name incremental -exec rm -rf {} + 2>/dev/null || true
-        find app/src/main/rust/target -name "*.rlib" -mtime +7 -delete 2>/dev/null || true
+      - name: Build APK
+        env:
+          AutoReleaseBuildRust: "1" # Debug 构建时 Rust 也用 debug 模式，省一半编译时间
+          RELEASE_KEYSTORE_PATH: ${{ github.workspace }}/app/keystore/release.keystore
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          if [ "${{ steps.keystore.outputs.signing }}" = "true" ]; then
+            ./gradlew assembleRelease --stacktrace
+          else
+            ./gradlew assembleDebug --stacktrace
+          fi
 
-    - name: Decode Release Keystore
-      run: |
-        echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > ${{ github.workspace }}/release.keystore
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MX-${{ github.sha }}
+          path: app/build/outputs/apk/*/*.apk
+          if-no-files-found: error
+          retention-days: 30
 
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
-
-    - name: Build Release APK
-      run: ./gradlew assembleRelease --stacktrace
-      env:
-        RELEASE_KEYSTORE_PATH: ${{ github.workspace }}/release.keystore
-        RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
-        RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-
-    - name: Upload Release APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: app-release
-        path: app/build/outputs/apk/release/*.apk
+      - name: Attach APK to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/*/*.apk
