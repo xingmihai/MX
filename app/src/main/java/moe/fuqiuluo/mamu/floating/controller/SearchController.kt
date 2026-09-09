@@ -230,6 +230,7 @@ class SearchController(
                 icon = R.drawable.icon_play_arrow_24px,
                 label = "执行脚本"
             ) {
+                notification.showWarning("脚本功能开发中")
             },
             ToolbarAction(
                 id = 8,
