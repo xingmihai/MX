@@ -67,6 +67,7 @@
 7. WHEN Script 调用 `gg.getResults(maxCount)`, THE System SHALL 返回当前搜索结果中不超过 `maxCount` 条的表，每项含 `address`、`value`、`flags`
 8. WHEN Script 调用 `gg.getSelectedResults()`, THE System SHALL 返回搜索页当前勾选结果的表，每项含 `address`、`value`、`flags`
 9. WHILE Script 运行, THE System SHALL 在 `gg` 表中提供 `TYPE_BYTE`、`TYPE_WORD`、`TYPE_DWORD`、`TYPE_QWORD`、`TYPE_FLOAT`、`TYPE_DOUBLE` 常量，取值与 GameGuardian 一致
+10. WHEN Script 调用 `gg.makeRequest(url)`, THE System SHALL 返回含 `code`、`url`、`content`、`error` 的表
 
 ### Requirement 5: 错误与超时
 

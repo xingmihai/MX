@@ -38,6 +38,7 @@ class GgApiBridge(
         gg.set("toast", ToastFn())
         gg.set("getResults", GetResults())
         gg.set("getSelectedResults", GetSelectedResults())
+        gg.set("makeRequest", MakeRequest())
         globals.set("gg", gg)
     }
 
@@ -111,6 +112,22 @@ class GgApiBridge(
     private inner class GetSelectedResults : ZeroArgFunction() {
         override fun call(): LuaValue {
             return toLuaResultTable(selectedResults)
+        }
+    }
+
+    private inner class MakeRequest : OneArgFunction() {
+        override fun call(url: LuaValue): LuaValue {
+            val result = ScriptUrlFetcher.request(url.tojstring())
+            val table = LuaTable()
+            table.set("code", result.code)
+            table.set("url", result.url)
+            table.set("content", result.content)
+            if (result.error == null) {
+                table.set("error", LuaValue.FALSE)
+            } else {
+                table.set("error", result.error)
+            }
+            return table
         }
     }
 

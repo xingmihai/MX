@@ -96,6 +96,7 @@ class ScriptHost(
 | `gg.toast(message)` | 主线程 `NotificationOverlay.showSuccess` |
 | `gg.getResults(maxCount)` | `SearchEngine.getResults(0, n)` 转 Lua 表 |
 | `gg.getSelectedResults()` | 使用启动时快照 |
+| `gg.makeRequest(url)` | GET http(s)，返回 `{code, url, content, error}` |
 
 `address` 接受 number 或十六进制字符串（`0x...`）。64 位地址优先用字符串，避免 Lua number 精度丢失。
 

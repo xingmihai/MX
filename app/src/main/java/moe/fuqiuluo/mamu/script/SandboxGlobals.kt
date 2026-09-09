@@ -63,8 +63,6 @@ object SandboxGlobals {
             env.set("print", PrintFunction(onPrint))
             env.set("dofile", ForbiddenFunction("dofile"))
             env.set("loadfile", ForbiddenFunction("loadfile"))
-            env.set("load", ForbiddenFunction("load"))
-            env.set("loadstring", ForbiddenFunction("loadstring"))
             return env
         }
     }

@@ -65,6 +65,20 @@ class ScriptRuntimeTest : FunSpec({
             .shouldNotBeNull()
     }
 
+    test("沙箱允许 load 编译字符串") {
+        val globals = SandboxGlobals.create(onPrint = {})
+        globals.load("return load('return 41+1')()").call().toint() shouldBe 42
+    }
+
+    test("makeRequest 对非法 URL 返回 error 表") {
+        val globals = SandboxGlobals.create(onPrint = {})
+        fakeApi().install(globals)
+        val table = globals.get("gg").get("makeRequest").call(LuaValue.valueOf("ftp://example.com"))
+        table.get("error").tojstring() shouldContain "http"
+        table.get("content").tojstring() shouldBe ""
+        table.get("code").toint() shouldBe 0
+    }
+
     test("空脚本由调用方拒绝：空白源码长度为 0") {
         "   \n".isBlank() shouldBe true
         "print(1)".isBlank() shouldBe false
