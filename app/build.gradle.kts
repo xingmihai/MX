@@ -50,7 +50,9 @@ android {
                 System.getenv("RELEASE_KEYSTORE_PASSWORD") ?: "defaultPasswordNotForProduction"
             keyAlias = System.getenv("RELEASE_KEY_ALIAS") ?: "mamu_release"
             keyPassword =
-                System.getenv("RELEASE_KEYSTORE_PASSWORD") ?: "defaultPasswordNotForProduction"
+                System.getenv("RELEASE_KEY_PASSWORD")
+                    ?: System.getenv("RELEASE_KEYSTORE_PASSWORD")
+                    ?: "defaultPasswordNotForProduction"
         }
     }
 

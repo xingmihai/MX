@@ -7,11 +7,6 @@ on:
   pull_request:
     branches: [master, main]
   workflow_dispatch:
-    inputs:
-      release:
-        description: "构建 Release APK（需先配置签名 secrets）"
-        type: boolean
-        default: false
 
 concurrency:
   group: build-apk-${{ github.ref }}
@@ -71,38 +66,29 @@ jobs:
         run: chmod +x gradlew
 
       - name: Prepare release keystore
-        if: ${{ github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release == 'true') }}
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        id: keystore
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            mkdir -p app/keystore
-            echo "$KEYSTORE_BASE64" | base64 -d > app/keystore/release.keystore
-            echo "signing=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::未配置签名 secrets，回退为 Debug 构建"
-            echo "signing=false" >> "$GITHUB_OUTPUT"
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::缺少 KEYSTORE_BASE64 secret，无法签名 Release APK"
+            exit 1
           fi
+          mkdir -p app/keystore
+          echo "$KEYSTORE_BASE64" | base64 -d > app/keystore/release.keystore
 
-      - name: Build APK
+      - name: Build Release APK
         env:
-          AutoReleaseBuildRust: "1" # Debug 构建时 Rust 也用 debug 模式，省一半编译时间
           RELEASE_KEYSTORE_PATH: ${{ github.workspace }}/app/keystore/release.keystore
           RELEASE_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-        run: |
-          if [ "${{ steps.keystore.outputs.signing }}" = "true" ]; then
-            ./gradlew assembleRelease --stacktrace
-          else
-            ./gradlew assembleDebug --stacktrace
-          fi
+          RELEASE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MX-${{ github.sha }}
-          path: app/build/outputs/apk/*/*.apk
+          name: MX-release-${{ github.sha }}
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -110,4 +96,4 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: app/build/outputs/apk/*/*.apk
+          files: app/build/outputs/apk/release/*.apk
