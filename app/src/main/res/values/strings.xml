@@ -346,4 +346,27 @@
     <string name="button_delete">删除</string>
     <string name="close">关闭</string>
 
+    <!-- 脚本对话框 -->
+    <string name="script_dialog_title">执行脚本</string>
+    <string name="script_hint">输入 Lua 脚本</string>
+    <string name="script_output_hint">输出</string>
+    <string name="script_button_run">运行</string>
+    <string name="script_button_stop">停止</string>
+    <string name="script_button_save">保存</string>
+    <string name="script_button_load">载入</string>
+    <string name="script_button_close">关闭</string>
+    <string name="script_empty">脚本为空</string>
+    <string name="script_unbound">未绑定进程</string>
+    <string name="script_completed">执行完成</string>
+    <string name="script_stopped">已停止</string>
+    <string name="script_timeout">执行超时</string>
+    <string name="script_engine_unavailable">脚本引擎不可用</string>
+    <string name="script_no_saved">没有已保存的脚本</string>
+    <string name="script_saved">已保存 %s</string>
+    <string name="script_load_title">载入脚本</string>
+    <string name="script_save_title">保存脚本</string>
+    <string name="script_hint_file_name">文件名</string>
+    <string name="script_invalid_file_name">文件名不合法</string>
+    <string name="script_warn_unbound_rw">未绑定进程，无法读写内存</string>
+
 </resources>

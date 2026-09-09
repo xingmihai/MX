@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<moe.fuqiuluo.mamu.widget.FixedLinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root_container"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/dialog_background"
+    android:minWidth="320dp"
+    android:orientation="vertical"
+    android:padding="@dimen/floating_spacing_lg"
+    app:maxHeightPercent="0.9"
+    app:maxWidthPercent="0.9">
+
+    <com.google.android.material.textview.MaterialTextView
+        android:id="@+id/title_text"
+        style="@style/FloatingText.H2"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="@dimen/floating_spacing_md"
+        android:text="@string/script_dialog_title" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="@dimen/floating_spacing_sm"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <com.google.android.material.textview.MaterialTextView
+            style="@style/FloatingText.Body"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="@dimen/floating_spacing_sm"
+            android:text="@string/label_file_name" />
+
+        <EditText
+            android:id="@+id/input_file_name"
+            android:layout_width="0dp"
+            android:layout_height="@dimen/floating_height_button_sm"
+            android:layout_weight="1"
+            android:background="@android:color/transparent"
+            android:hint="@string/script_hint_file_name"
+            android:inputType="text"
+            android:paddingStart="@dimen/floating_spacing_xs"
+            android:paddingEnd="@dimen/floating_spacing_xs"
+            android:textColor="@color/floating_text_primary"
+            android:textColorHint="@color/floating_text_secondary"
+            android:textSize="@dimen/floating_text_body" />
+    </LinearLayout>
+
+    <EditText
+        android:id="@+id/input_script"
+        android:layout_width="match_parent"
+        android:layout_height="160dp"
+        android:layout_marginBottom="@dimen/floating_spacing_sm"
+        android:background="@drawable/bg_transparent_border"
+        android:gravity="top|start"
+        android:hint="@string/script_hint"
+        android:inputType="textMultiLine|textNoSuggestions"
+        android:padding="@dimen/floating_spacing_sm"
+        android:textColor="@color/floating_text_primary"
+        android:textColorHint="@color/floating_text_secondary"
+        android:textSize="@dimen/floating_text_caption"
+        android:typeface="monospace" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="120dp"
+        android:layout_marginBottom="@dimen/floating_spacing_md"
+        android:background="@drawable/bg_transparent_border"
+        android:fillViewport="true">
+
+        <TextView
+            android:id="@+id/output_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="@dimen/floating_spacing_sm"
+            android:text="@string/script_output_hint"
+            android:textColor="@color/floating_text_secondary"
+            android:textSize="@dimen/floating_text_caption"
+            android:typeface="monospace" />
+    </ScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="end"
+        android:orientation="horizontal">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_load"
+            style="@style/FloatingButton.Text.White"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/script_button_load" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_save"
+            style="@style/FloatingButton.Text.White"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/script_button_save" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_stop"
+            style="@style/FloatingButton.Text.White"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:enabled="false"
+            android:text="@string/script_button_stop" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_run"
+            style="@style/FloatingButton.Text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/script_button_run" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_close"
+            style="@style/FloatingButton.Text.White"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/script_button_close" />
+    </LinearLayout>
+
+</moe.fuqiuluo.mamu.widget.FixedLinearLayout>

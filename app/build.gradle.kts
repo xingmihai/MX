@@ -152,6 +152,9 @@ dependencies {
     // kotlin-csv for CSV file handling
     implementation("com.jsoizo:kotlin-csv-jvm:1.10.0")
 
+    // Lua runtime for script execution
+    implementation("org.luaj:luaj-jse:3.0.1")
+
     testImplementation(libs.junit)
     testImplementation(libs.kotest.runner.junit5)
     testImplementation(libs.kotest.property)

@@ -48,7 +48,9 @@ import moe.fuqiuluo.mamu.floating.dialog.AddressActionDialog
 import moe.fuqiuluo.mamu.floating.dialog.AddressActionSource
 import moe.fuqiuluo.mamu.floating.dialog.ExportAddressDialog
 import moe.fuqiuluo.mamu.floating.dialog.FuzzySearchDialog
+import moe.fuqiuluo.mamu.floating.dialog.ScriptDialog
 import moe.fuqiuluo.mamu.floating.event.UIActionEvent
+import moe.fuqiuluo.mamu.script.GgApiBridge.Companion.toScriptResultItem
 import moe.fuqiuluo.mamu.utils.ValueTypeUtils
 import moe.fuqiuluo.mamu.utils.ByteFormatUtils.formatBytes
 import moe.fuqiuluo.mamu.widget.NotificationOverlay
@@ -79,6 +81,8 @@ class SearchController(
 
     // 持久化的 PointerScanDialog 实例
     private var pointerScanDialog: PointerScanDialog? = null
+
+    private var scriptDialog: ScriptDialog? = null
 
     override fun initialize() {
         setupToolbar()
@@ -230,7 +234,7 @@ class SearchController(
                 icon = R.drawable.icon_play_arrow_24px,
                 label = "执行脚本"
             ) {
-                notification.showWarning("脚本功能开发中")
+                showScriptDialog()
             },
             ToolbarAction(
                 id = 8,
@@ -1380,6 +1384,9 @@ class SearchController(
         if (pointerScanDialog == null || pointerScanDialog?.isScanning == false) {
             pointerScanDialog = null
         }
+        if (scriptDialog == null || scriptDialog?.isRunning == false) {
+            scriptDialog = null
+        }
     }
 
     override fun cleanup() {
@@ -1388,7 +1395,29 @@ class SearchController(
         searchDialog?.release()
         fuzzySearchDialog?.release()
         pointerScanDialog?.release()
+        scriptDialog?.release()
         coroutineScope.cancel()
+    }
+
+    private fun showScriptDialog() {
+        if (scriptDialog?.isRunning == true) {
+            scriptDialog?.show()
+            return
+        }
+        scriptDialog = ScriptDialog(
+            context = context,
+            notification = notification,
+            getSelectedResults = {
+                searchResultAdapter.getSelectedItems().map { it.toScriptResultItem() }
+            }
+        ).apply {
+            onCancel = {
+                if (!isRunning) {
+                    scriptDialog = null
+                }
+            }
+        }
+        scriptDialog?.show()
     }
 
     private fun showPointerScanDialog() {
