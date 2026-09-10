@@ -41,6 +41,15 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import moe.fuqiuluo.mamu.data.settings.selectedMemoryRanges
+import moe.fuqiuluo.mamu.floating.data.model.DisplayValueType
+import moe.fuqiuluo.mamu.floating.data.model.MemoryRange
+import moe.fuqiuluo.mamu.script.ScriptRegions
+import moe.fuqiuluo.mamu.script.ScriptSearchStatus
+import moe.fuqiuluo.mamu.driver.ExactSearchResultItem
+import moe.fuqiuluo.mamu.driver.FuzzySearchResultItem
+import moe.fuqiuluo.mamu.driver.PointerChainResultItem
+import moe.fuqiuluo.mamu.driver.SearchResultItem
 
 class ScriptDialog(
     context: Context,
@@ -80,6 +89,16 @@ class ScriptDialog(
     // 例如:脚本 A 加载中被 Stop(stopped=true),用户启动 B(stopped=false,epoch++),
     // A 的 IO 完成后核对 epoch 已变化,直接 return,不会执行 A。
     private val sessionEpoch = AtomicLong(0L)
+    // gg.setRanges 使用的内存区域集合，初始沿用用户在悬浮窗里的选择。
+    // 独立于 MMKV，避免脚本改动污染 UI 设置。
+    private val scriptRanges: MutableSet<MemoryRange> =
+        MMKV.defaultMMKV().selectedMemoryRanges.toMutableSet()
+    // gg.getRanges 回显的 GG 位掩码。必须与 scriptRanges 保持同步，
+    // 且初值由 scriptRanges 反推：否则脚本"保存 → 切换 → 用保存值恢复"时
+    // 拿到的是 0，setRanges(0) 被拒绝，临时区域就残留下来了。
+    @Volatile
+    private var scriptRegionFlags: Int =
+        ScriptRegions.fromRangeCodes(scriptRanges.map { it.code }.toSet())
 
     private fun shouldBlockInteractive(): Boolean = released || stopped
 
@@ -273,6 +292,13 @@ class ScriptDialog(
             },
             onPrompt = { request -> runBlockingDialog(epoch) { showPromptDialog(request, it) } },
             onIsVisible = { overlayVisible.get() },
+            onStartSearch = { query, type -> startScriptSearch(query, type) },
+            onStartRefine = { query, type -> startScriptRefine(query, type) },
+            onSearchStatus = { scriptSearchStatus() },
+            onCancelSearch = { runCatching { SearchEngine.requestCancel() } },
+            onSetRanges = { flags -> applyScriptRanges(flags) },
+            onGetRanges = { scriptRegionFlags },
+            onEditAll = { bytes, shouldStop -> editAllResults(bytes, shouldStop) },
             onSetVisible = { v ->
                 // 先写后校验(乐观模式):先写 overlayVisible,然后再检查 epoch/released。
                 // 旧会话 worker 可能在检查与写入之间被抢占,而新会话 incrementAndGet 已执行。
@@ -411,6 +437,118 @@ class ScriptDialog(
         }
     }
 
+    /**
+     * 启动脚本发起的异步搜索。使用 [scriptRanges] 作为内存区域。
+     */
+    private fun startScriptSearch(query: String, type: DisplayValueType): Boolean {
+        if (!WuwaDriver.isProcessBound) return false
+        if (SearchEngine.isSearching()) return false
+        return runCatching {
+            SearchEngine.startSearchAsync(
+                query = query,
+                type = type,
+                ranges = scriptRanges.toSet(),
+                useDeepSearch = false
+            )
+        }.getOrDefault(false)
+    }
+
+    /**
+     * 在上次结果基础上细化搜索。
+     */
+    private fun startScriptRefine(query: String, type: DisplayValueType): Boolean {
+        if (!WuwaDriver.isProcessBound) return false
+        if (SearchEngine.isSearching()) return false
+        return runCatching {
+            SearchEngine.startRefineAsync(query = query, type = type)
+        }.getOrDefault(false)
+    }
+
+    /**
+     * 把搜索引擎的共享缓冲区状态翻译成桥接层可理解的结果。
+     */
+    private fun scriptSearchStatus(): ScriptSearchStatus {
+        return when (SearchEngine.getStatus()) {
+            // 状态位 published 早于 native 的 JoinHandle 结束，而启动新搜索前
+            // 的 busy 检查看的是那个 handle。若这里只看状态位就返回完成，
+            // 紧随其后的 refineNumber / searchNumber 可能撞上 busy 而失败，
+            // 顺序执行的脚本会莫名其妙中断。所以两个条件都要满足。
+            SearchEngine.Status.COMPLETED ->
+                ScriptSearchStatus(!SearchEngine.isSearching(), SearchEngine.getTotalResultCount(), null)
+
+            SearchEngine.Status.CANCELLED ->
+                ScriptSearchStatus(true, 0L, "搜索已取消")
+
+            SearchEngine.Status.ERROR ->
+                ScriptSearchStatus(true, 0L, "搜索失败，错误码 ${SearchEngine.getErrorCode()}")
+
+            else ->
+                ScriptSearchStatus(false, SearchEngine.getFoundCount().coerceAtLeast(0L), null)
+        }
+    }
+
+    /**
+     * 把同一段字节写入当前结果列表的全部条目。
+     *
+     * 必须分页：一次 getResults 受 MAX_GET_RESULTS 上限约束，而 DWORD 搜 0
+     * 这类宽搜索的匹配数远超该值。gg.editAll 承诺改写全部结果，
+     * 只写第一页会静默漏掉后面的匹配。
+     */
+    private fun editAllResults(bytes: ByteArray, shouldStop: () -> Boolean): Int {
+        if (!WuwaDriver.isProcessBound) return 0
+        val reported = SearchEngine.getTotalResultCount().coerceAtLeast(0L)
+        if (reported <= 0L) return 0
+        // SearchEngine.getResults(start: Int, count: Int) 只能按 Int 索引，
+        // 超过 Int.MAX_VALUE 的结果根本取不到。若直接拿 Long 的 total 循环，
+        // offset.toInt() 会回绕成负数，导致重复读页甚至跳页。
+        // 这里显式夹到可寻址上限，保证 offset 始终落在 Int 域内。
+        val total = minOf(reported, Int.MAX_VALUE.toLong())
+        var written = 0
+        var offset = 0L
+        while (offset < total) {
+            // 写入前必须检查中断：editAll 处理宽搜索结果时会持续很久，
+            // 用户 Stop 或脚本超时后不应继续往内存里写。
+            if (shouldStop()) break
+            val count = minOf(EDIT_ALL_PAGE_SIZE.toLong(), total - offset).toInt()
+            val page = runCatching { SearchEngine.getResults(offset.toInt(), count) }.getOrNull()
+            if (page == null || page.isEmpty()) break
+            for (item in page) {
+                if (shouldStop()) return written
+                val address = addressOf(item)
+                // address 为 0 表示无法从该结果类型取出地址，跳过而不是写入空指针页
+                if (address != 0L && WuwaDriver.writeMemory(address, bytes)) written++
+            }
+            offset += count
+        }
+        return written
+    }
+
+    /**
+     * 取出结果项的地址。
+     *
+     * SearchResultItem 是接口，只声明了 nativePosition 与 displayValueType；
+     * address 字段在具体子类上，所以必须按类型分派，
+     * 直接写 item.address 会编译不过（Unresolved reference）。
+     * 分支与 GgApiBridge.toScriptResultItem() 保持一致。
+     */
+    private fun addressOf(item: SearchResultItem): Long = when (item) {
+        is ExactSearchResultItem -> item.address
+        is FuzzySearchResultItem -> item.address
+        is PointerChainResultItem -> item.address
+        else -> 0L
+    }
+
+    private fun applyScriptRanges(flags: Int): Boolean {
+        val ranges = ScriptRegions.toRangeCodes(flags)
+            .mapNotNull { MemoryRange.fromCode(it) }
+            .toSet()
+        if (ranges.isEmpty()) return false
+        scriptRanges.clear()
+        scriptRanges.addAll(ranges)
+        scriptRegionFlags = flags
+        return true
+    }
+
     private fun listMemoryRanges(filter: String?): List<ScriptMemoryRange> {
         if (!WuwaDriver.isProcessBound) return emptyList()
         val regions = runCatching { WuwaDriver.queryMemRegionsWithRetry() }.getOrNull() ?: return emptyList()
@@ -530,5 +668,7 @@ class ScriptDialog(
 
     companion object {
         private const val LAST_DIR_KEY = "script_browser_last_dir"
+        // gg.editAll 分页写入时每页的条目数。
+        private const val EDIT_ALL_PAGE_SIZE = 4096
     }
 }

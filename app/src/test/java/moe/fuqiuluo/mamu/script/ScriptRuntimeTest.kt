@@ -672,10 +672,196 @@ class ScriptRuntimeTest : FunSpec({
         ScriptUrlFetcher.validate("https://example.com/a.lua") shouldBe null
         ScriptUrlFetcher.validate("http://example.com/a.lua") shouldBe null
     }
+
+    test("REGION 常量与 GameGuardian 官方值一致") {
+        ScriptRegions.C_HEAP shouldBe 1
+        ScriptRegions.JAVA_HEAP shouldBe 2
+        ScriptRegions.C_ALLOC shouldBe 4
+        ScriptRegions.C_DATA shouldBe 8
+        ScriptRegions.C_BSS shouldBe 16
+        ScriptRegions.ANONYMOUS shouldBe 32
+        ScriptRegions.STACK shouldBe 64
+        ScriptRegions.CODE_APP shouldBe 16384
+        ScriptRegions.CODE_SYS shouldBe 32768
+        ScriptRegions.BAD shouldBe 131072
+        ScriptRegions.JAVA shouldBe 65536
+        ScriptRegions.PPSSPP shouldBe 262144
+        ScriptRegions.ASHMEM shouldBe 524288
+        ScriptRegions.VIDEO shouldBe 1048576
+        ScriptRegions.OTHER shouldBe -2080896
+    }
+
+    test("REGION 位掩码翻译为区域代码") {
+        ScriptRegions.toRangeCodes(ScriptRegions.C_HEAP or ScriptRegions.ANONYMOUS) shouldBe
+            setOf("Ch", "An")
+        ScriptRegions.toRangeCodes(0).isEmpty() shouldBe true
+    }
+
+    test("gg.getResults 的 value 是 number") {
+        val items = listOf(
+            ScriptResultItem(address = 0x1000L, value = "42", flags = ScriptTypeFlags.DWORD),
+            ScriptResultItem(address = 0x2000L, value = "1.5", flags = ScriptTypeFlags.FLOAT)
+        )
+        val api = fakeApi(results = items)
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val table = globals.get("gg").get("getResults").call(LuaValue.valueOf(10))
+        // 必须用 type() 断言真实 Lua 类型：LuaJ 的 isnumber()/todouble() 对
+        // 数字字符串也成立，用 isnumber() 断言的话即使退回字符串也会通过，
+        // 抓不到本次要修的回归。
+        table.get(1).get("value").type() shouldBe LuaValue.TNUMBER
+        table.get(1).get("value").todouble() shouldBe 42.0
+        table.get(2).get("value").type() shouldBe LuaValue.TNUMBER
+        table.get(2).get("value").todouble() shouldBe 1.5
+    }
+
+    test("Qword 超过 2^53 时 value 保留字符串") {
+        val huge = "18446744073709551615"
+        val api = fakeApi(
+            results = listOf(
+                ScriptResultItem(0x1000L, huge, ScriptTypeFlags.QWORD)
+            )
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val table = globals.get("gg").get("getResults").call(LuaValue.valueOf(1))
+        table.get(1).get("value").type() shouldBe LuaValue.TSTRING
+        table.get(1).get("value").tojstring() shouldBe huge
+    }
+
+    test("gg.getTargetInfo 提供 packageName") {
+        val api = fakeApi(bound = true)
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val info = globals.get("gg").get("getTargetInfo").call()
+        info.get("packageName").tojstring() shouldBe "demo"
+        info.get("processName").tojstring() shouldBe "demo"
+        globals.get("gg").get("getTargetPackage").call().tojstring() shouldBe "demo"
+    }
+
+    test("gg.getTargetPackage 去掉子进程后缀") {
+        val api = fakeApi(bound = true, processName = "com.example.game:service")
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        globals.get("gg").get("getTargetPackage").call().tojstring() shouldBe "com.example.game"
+    }
+
+    test("gg.editAll 在中断时停止写入") {
+        var writes = 0
+        val api = fakeApi(
+            bound = true,
+            onEditAll = { _, shouldStop ->
+                // 模拟分页写入：每次写前检查中断，触发后立即返回已写条数
+                while (writes < 10 && !shouldStop()) {
+                    writes++
+                }
+                writes
+            }
+        )
+        api.shouldInterrupt = { writes >= 3 }
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val error = runCatching {
+            globals.get("gg").get("editAll").call(LuaValue.valueOf(99))
+        }.exceptionOrNull()
+        // 中断后必须抛出，而不是带着"只写了一半"的计数继续往下跑
+        error.shouldNotBeNull().message.shouldContain("interrupted")
+        writes shouldBe 3
+    }
+
+    test("gg.searchNumber 对 Lua 数字保持双精度") {
+        var captured: String? = null
+        val api = fakeApi(
+            bound = true,
+            onStartSearch = { query, _ ->
+                captured = query
+                true
+            },
+            onSearchStatus = { ScriptSearchStatus(true, 0L, null) }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        globals.get("gg").get("searchNumber").call(
+            LuaValue.valueOf(0.1234567890123),
+            globals.get("gg").get("TYPE_DOUBLE")
+        )
+        // 若走 LuaDouble.tojstring() 会得到 Float 精度的 "0.12345679"
+        captured shouldBe "0.1234567890123"
+    }
+
+    test("gg.setValues 保留数字字符串的 Qword 精度") {
+        var written: ByteArray? = null
+        val api = fakeApi(
+            bound = true,
+            writeMemory = { _, data ->
+                written = data
+                true
+            }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val items = LuaValue.tableOf()
+        val row = LuaValue.tableOf()
+        row.set("address", LuaValue.valueOf("0x1000"))
+        row.set("flags", globals.get("gg").get("TYPE_QWORD"))
+        row.set("value", LuaValue.valueOf("18446744073709551615"))
+        items.set(1, row)
+        globals.get("gg").get("setValues").call(items).toboolean() shouldBe true
+        // 经 double 中转会得到 Long 饱和值，正确结果应全为 0xFF
+        written.toList() shouldBe List(8) { 0xFF.toByte() }
+    }
+
+    test("区域掩码与 code 集合互为逆运算") {
+        val flags = ScriptRegions.C_HEAP or ScriptRegions.ANONYMOUS or ScriptRegions.CODE_APP
+        val codes = ScriptRegions.toRangeCodes(flags)
+        ScriptRegions.fromRangeCodes(codes) shouldBe flags
+    }
+
+    test("gg.searchNumber 保留大数字符串的精度") {
+        var captured: String? = null
+        val api = fakeApi(
+            bound = true,
+            onStartSearch = { query, _ ->
+                captured = query
+                true
+            },
+            onSearchStatus = { ScriptSearchStatus(true, 0L, null) }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        globals.get("gg").get("searchNumber").call(
+            LuaValue.valueOf("9007199254740993"),
+            globals.get("gg").get("TYPE_QWORD")
+        )
+        captured shouldBe "9007199254740993"
+    }
+
+    test("gg.searchNumber 拒绝加密搜索") {
+        val api = fakeApi(bound = true)
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val error = runCatching {
+            globals.get("gg").get("searchNumber").call(
+                LuaValue.valueOf(123),
+                globals.get("gg").get("TYPE_DWORD"),
+                LuaValue.TRUE
+            )
+        }.exceptionOrNull()
+        error.shouldNotBeNull().message.shouldContain("加密")
+    }
+
+    test("gg.setRanges 拒绝无法识别的 flags") {
+        // onSetRanges 返回 false 模拟"没有任何已知位被置上"
+        val api = fakeApi(onSetRanges = { false })
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        globals.get("gg").get("setRanges").call(LuaValue.valueOf(0)).toboolean() shouldBe false
+    }
 })
 
 private fun fakeApi(
     bound: Boolean = true,
+    processName: String = "demo",
     results: List<ScriptResultItem> = emptyList(),
     selected: List<ScriptResultItem> = emptyList(),
     onToast: (String) -> Unit = {},
@@ -690,7 +876,14 @@ private fun fakeApi(
     onAlert: (ScriptAlertRequest) -> Int? = { null },
     onChoice: (ScriptChoiceRequest) -> Int? = { null },
     onMultiChoice: (ScriptChoiceRequest) -> List<Int>? = { null },
-    onPrompt: (ScriptPromptRequest) -> List<String>? = { null }
+    onPrompt: (ScriptPromptRequest) -> List<String>? = { null },
+    onStartSearch: (String, DisplayValueType) -> Boolean = { _, _ -> false },
+    onStartRefine: (String, DisplayValueType) -> Boolean = { _, _ -> false },
+    onSearchStatus: () -> ScriptSearchStatus = { ScriptSearchStatus(true, 0L, null) },
+    onCancelSearch: () -> Unit = {},
+    onSetRanges: (Int) -> Boolean = { true },
+    onGetRanges: () -> Int = { 0 },
+    onEditAll: (ByteArray, () -> Boolean) -> Int = { _, _ -> 0 }
 ): GgApiBridge {
     return GgApiBridge(
         selectedResults = selected,
@@ -699,7 +892,7 @@ private fun fakeApi(
         getResults = { maxCount -> results.take(maxCount) },
         isProcessBound = { bound },
         currentPid = { 123 },
-        processName = { "demo" },
+        processName = { processName },
         readMemory = readMemory,
         writeMemory = writeMemory,
         onGetResultsCount = onGetResultsCount,
@@ -711,6 +904,13 @@ private fun fakeApi(
         onAlert = onAlert,
         onChoice = onChoice,
         onMultiChoice = onMultiChoice,
-        onPrompt = onPrompt
+        onPrompt = onPrompt,
+        onStartSearch = onStartSearch,
+        onStartRefine = onStartRefine,
+        onSearchStatus = onSearchStatus,
+        onCancelSearch = onCancelSearch,
+        onSetRanges = onSetRanges,
+        onGetRanges = onGetRanges,
+        onEditAll = onEditAll
     )
 }
