@@ -124,6 +124,9 @@ class ScriptDialog(
     }
 
     private fun runLocalFile(path: String) {
+        // 新会话启动点:重置 released 标志,确保后续输出进入控制台。
+        // 此处运行在主线程,与 release() 的 released=true 互斥,不会出现重置先于关闭的竞态。
+        released = false
         coroutineScope.launch {
             val source = withContext(Dispatchers.IO) {
                 runCatching { ScriptLocalBrowser.read(path) }
@@ -144,6 +147,8 @@ class ScriptDialog(
             return
         }
         if (host.isRunning) return
+        // 新会话启动点:同 runLocalFile,先重置 released 再起协程。
+        released = false
         coroutineScope.launch {
             appendOutput(context.getString(R.string.script_downloading))
             val source = withContext(Dispatchers.IO) {
@@ -162,8 +167,8 @@ class ScriptDialog(
             return
         }
         if (host.isRunning) return
-        // 新会话开始:重置 released 标志,确保本次脚本的输出能正常进入控制台。
-        released = false
+        // 协程恢复时若会话已关闭,直接放弃执行,避免启动孤立脚本与控制台。
+        if (released) return
         // 切换脚本前清空控制台,新会话从空白开始。所有 console 访问统一在主线程。
         val previousConsole = console
         console = null
