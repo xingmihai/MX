@@ -28,13 +28,15 @@ class ScriptHost(
         worker = thread(name = "mamu-lua-host", isDaemon = true) {
             val start = System.currentTimeMillis()
             val reason = runCatching {
-                val debugLib = InterruptDebugLib {
+                val shouldStop = {
                     cancelled.get() || System.currentTimeMillis() - start >= timeoutMs
                 }
+                val debugLib = InterruptDebugLib(shouldStop)
                 val globals = SandboxGlobals.create(
                     onPrint = { line -> post { onOutput(line) } },
                     debugHook = debugLib
                 )
+                api.shouldInterrupt = shouldStop
                 api.install(globals)
                 globals.load(source, "script").call()
                 when {

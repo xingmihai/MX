@@ -6,6 +6,13 @@ data class ScriptResultItem(
     val flags: Int
 )
 
+data class ScriptMemoryRange(
+    val start: Long,
+    val end: Long,
+    val name: String,
+    val state: String
+)
+
 sealed class ScriptEndReason {
     data object Completed : ScriptEndReason()
     data object Stopped : ScriptEndReason()

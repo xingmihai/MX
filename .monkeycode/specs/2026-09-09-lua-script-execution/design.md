@@ -93,9 +93,18 @@ class ScriptHost(
 | `gg.getTargetInfo()` | 已绑定返回 `{pid, processName}`，否则 `nil` |
 | `gg.readValue(address, type)` | 读内存；失败返回 `nil` |
 | `gg.writeValue(address, value, type)` | 写内存；返回 boolean |
-| `gg.toast(message)` | 主线程 `NotificationOverlay.showSuccess` |
+| `gg.toast(message)` | 主线程 `NotificationOverlay.showWarning` |
+| `gg.sleep(ms)` | Lua 线程每 50ms 检查 ScriptHost 取消/60s 超时，到期抛 `script interrupted` |
+| `gg.copyText(text)` | 写入系统剪贴板 |
 | `gg.getResults(maxCount)` | `SearchEngine.getResults(0, n)` 转 Lua 表 |
+| `gg.getResultsCount()` / `gg.getResultCount()` | `SearchEngine.getTotalResultCount()` |
 | `gg.getSelectedResults()` | 使用启动时快照 |
+| `gg.clearResults()` | 清空 SearchEngine，并同步搜索页 Adapter / 空态 / 计数 |
+| `gg.getValues(items)` | 按表项 `address`/`flags` 回填 `value` |
+| `gg.setValues(items)` | 按表项写内存；`freeze=true` 时走 `FreezeManager` |
+| `gg.copyMemory(from, to, bytes)` | 读源地址再写目标地址 |
+| `gg.getRangesList([name])` | `WuwaDriver.queryMemRegions`，可按名字过滤 |
+| `gg.getTargetPackage()` | 已绑定返回进程名，否则 `nil` |
 | `gg.makeRequest(url)` | GET http(s)，返回 `{code, url, content, error}` |
 
 `address` 接受 number 或十六进制字符串（`0x...`）。64 位地址优先用字符串，避免 Lua number 精度丢失。
