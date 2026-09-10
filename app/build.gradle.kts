@@ -33,6 +33,14 @@ android {
         versionName = "1.0.1" + ".r${gitCommitCount.get()}." + appVersionNameProvider.get()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // 只打包 arm64-v8a
+        // 1) Rust core 仅编译 aarch64-linux-android（见下方 buildRustAndroid / copyRustLibs），
+        //    其他 ABI 缺少 libmamu_core.so，装上也会在 System.loadLibrary 时崩溃。
+        // 2) 同时剔除三方库（如 MMKV）自带的 armeabi-v7a / x86 / x86_64 .so，显著减小 APK 体积。
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     signingConfigs {
