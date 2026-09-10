@@ -23,7 +23,9 @@ class ScriptHost(
         onOutput: (String) -> Unit,
         onFinished: (ScriptEndReason) -> Unit
     ) {
-        if (isRunning) return
+        // 若旧 worker 仍在 unwind(用户 Stop 后或新会话立即启动),interrupt 它并直接
+        // 启动新 worker,避免 executeSource 因 isRunning=true 静默丢弃新会话。
+        worker?.takeIf { it.isAlive }?.interrupt()
         cancelled.set(false)
         worker = thread(name = "mamu-lua-host", isDaemon = true) {
             val start = System.currentTimeMillis()
