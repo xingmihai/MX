@@ -246,14 +246,14 @@ class ScriptDialog(
             onCopyText = { text -> copyText(text) },
             onFreeze = { addr, bytes, typeId -> FreezeManager.addFrozen(addr, bytes, typeId) },
             onUnfreeze = { addr -> FreezeManager.removeFrozen(addr) },
-            onAlert = { request -> runBlockingDialog { showAlertDialog(request, it) } },
+            onAlert = { request -> runBlockingDialog(epoch) { showAlertDialog(request, it) } },
             onChoice = { request ->
-                runBlockingDialog { showChoiceDialog(request, multiSelect = false, it) }?.firstOrNull()
+                runBlockingDialog(epoch) { showChoiceDialog(request, multiSelect = false, it) }?.firstOrNull()
             },
             onMultiChoice = { request ->
-                runBlockingDialog { showChoiceDialog(request, multiSelect = true, it) }
+                runBlockingDialog(epoch) { showChoiceDialog(request, multiSelect = true, it) }
             },
-            onPrompt = { request -> runBlockingDialog { showPromptDialog(request, it) } }
+            onPrompt = { request -> runBlockingDialog(epoch) { showPromptDialog(request, it) } }
         )
         host.execute(
             source = source,
@@ -292,13 +292,14 @@ class ScriptDialog(
      * [show] 在主线程执行,其回调参数完成时计数 down,返回回调传入的值。
      * worker 在等待期间被中断时会抛 LuaError(由调用方处理 shouldInterrupt)。
      */
-    private fun <T> runBlockingDialog(show: (onResult: (T?) -> Unit) -> Unit): T? {
+    private fun <T> runBlockingDialog(expectedEpoch: Long, show: (onResult: (T?) -> Unit) -> Unit): T? {
         val latch = CountDownLatch(1)
         val result = AtomicReference<T?>()
         mainHandler.post {
-            // 会话已释放或脚本已停止:不再显示新弹窗,立即返回 null 解除 worker 阻塞,
-            // 否则排队的 show 会在脚本停止/父弹窗关闭后创建孤立悬浮窗。
-            if (shouldBlockInteractive()) {
+            // 会话已切换(epoch 不匹配)、已释放或脚本已停止:不再显示新弹窗,
+            // 立即返回 null 解除 worker 阻塞,否则旧会话的 alert/choice/prompt
+            // 会在新会话期间打开,阻塞或向已废弃的 worker 回传输入。
+            if (sessionEpoch.get() != expectedEpoch || shouldBlockInteractive()) {
                 result.set(null)
                 latch.countDown()
                 return@post

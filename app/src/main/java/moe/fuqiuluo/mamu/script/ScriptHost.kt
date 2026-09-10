@@ -1,6 +1,7 @@
 package moe.fuqiuluo.mamu.script
 
 import org.luaj.vm2.LuaError
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -16,14 +17,20 @@ class ScriptHost(
     @Volatile
     private var cancelled: AtomicBoolean = AtomicBoolean(false)
 
+    // 单线程执行器:串行处理所有脚本执行请求,保证任意时刻只有一个 worker 运行,
+    // 不会出现多个 replace 调度线程并行 join 同一 previous 后并发 startWorker。
+    private val executor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "mamu-lua-executor").apply { isDaemon = true }
+    }
+
     val isRunning: Boolean
         get() = worker?.isAlive == true
 
     /**
-     * 提交一个脚本执行请求。若已有 worker 在运行,旧 worker 会被标记取消并等待真正
-     * 退出后,新 worker 才在同一调度线程上启动,保证任意时刻只有一个 worker 运行
-     * (无并行)。execute 立即返回,不阻塞主线程。新会话不会被静默丢弃:它一定
-     * 会在旧 worker 退出后执行。
+     * 提交一个脚本执行请求到串行执行器。由于 executor 是单线程,多个 execute
+     * 请求会排队依次执行:前一个任务(含旧 worker 的运行)完成后,下一个任务
+     * 才开始。这从根本上保证不并行,也保证新会话不被静默丢弃。
+     * execute 立即返回,不阻塞主线程。
      */
     @Synchronized
     fun execute(
@@ -33,23 +40,13 @@ class ScriptHost(
         onFinished: (ScriptEndReason) -> Unit
     ) {
         val myCancelled = AtomicBoolean(false)
+        // 先把旧会话的取消标志置 true 并 interrupt 旧 worker,让它尽快退出。
+        // 注意:必须用旧的 cancelled 引用(此时还未被 myCancelled 覆盖)。
+        cancelled.set(true)
+        worker?.takeIf { it.isAlive }?.interrupt()
+        // 切换到新会话的取消标志。
         cancelled = myCancelled
-        val previous = worker
-        if (previous != null && previous.isAlive) {
-            // 提示旧 worker 尽快到达取消点退出。
-            previous.interrupt()
-            // 在调度线程里等待旧 worker 真正退出,再启动新 worker,保证不并行。
-            // 注意:不检查 worker !== previous 放弃,否则新会话会被静默丢弃。
-            // 即便期间又提交了 C,C 的 execute 会再次进入这里,把 C 排在 B 之后,
-            // 由同一调度链串行处理(B 启动后 C 再等 B)。
-            thread(name = "mamu-lua-replace", isDaemon = true) {
-                try { previous.join() } catch (_: InterruptedException) {
-                    // 调度线程被中断,放弃本次替换(极端情况)
-                    return@thread
-                }
-                startWorker(source, api, onOutput, onFinished, myCancelled)
-            }
-        } else {
+        executor.submit {
             startWorker(source, api, onOutput, onFinished, myCancelled)
         }
     }
@@ -99,6 +96,9 @@ class ScriptHost(
                 if (worker === Thread.currentThread()) worker = null
             }
         }
+        // 等待本 worker 真正退出再返回,使 executor 的下一个任务在本 worker 结束后才开始,
+        // 保证串行。executor 线程(非主线程)阻塞在此可接受。
+        try { worker?.join() } catch (_: InterruptedException) {}
     }
 
     fun stop() {
