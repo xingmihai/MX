@@ -159,8 +159,10 @@ class ScriptDialog(
             },
             onWarn = { message -> mainHandler.post { appendOutput(message) } },
             getResults = { maxCount ->
-                val total = SearchEngine.getTotalResultCount().toInt().coerceAtLeast(0)
-                val count = maxCount.coerceAtMost(total)
+                val count = GgApiBridge.clampResultLimit(
+                    maxCount,
+                    SearchEngine.getTotalResultCount()
+                )
                 if (count <= 0) emptyList() else {
                     SearchEngine.getResults(0, count).map { it.toScriptResultItem() }
                 }
@@ -173,7 +175,7 @@ class ScriptDialog(
             readMemory = { addr, size -> WuwaDriver.readMemory(addr, size) },
             writeMemory = { addr, data -> WuwaDriver.writeMemory(addr, data) },
             onGetResultsCount = {
-                SearchEngine.getTotalResultCount().toInt().coerceAtLeast(0)
+                SearchEngine.getTotalResultCount().coerceAtLeast(0L)
             },
             onClearResults = onClearSearchResults,
             onGetMemoryRanges = { filter -> listMemoryRanges(filter) },

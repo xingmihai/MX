@@ -24,7 +24,7 @@ class GgApiBridge(
     private val processName: () -> String?,
     private val readMemory: (Long, Int) -> ByteArray?,
     private val writeMemory: (Long, ByteArray) -> Boolean,
-    private val onGetResultsCount: () -> Int = { 0 },
+    private val onGetResultsCount: () -> Long = { 0L },
     private val onClearResults: () -> Unit = {},
     private val onGetMemoryRanges: (String?) -> List<ScriptMemoryRange> = { emptyList() },
     private val onCopyText: (String) -> Unit = {},
@@ -32,6 +32,7 @@ class GgApiBridge(
     private val onUnfreeze: (Long) -> Boolean = { false }
 ) {
     var shouldInterrupt: () -> Boolean = { false }
+
     fun install(globals: org.luaj.vm2.Globals) {
         val gg = LuaTable()
         gg.set("TYPE_BYTE", ScriptTypeFlags.BYTE)
@@ -136,9 +137,7 @@ class GgApiBridge(
             val duration = if (ms.isnil()) 0L else ms.todouble().toLong().coerceAtLeast(0)
             val endAt = System.currentTimeMillis() + duration
             while (true) {
-                if (shouldInterrupt()) {
-                    throw LuaError("script interrupted")
-                }
+                throwIfInterrupted()
                 val remain = endAt - System.currentTimeMillis()
                 if (remain <= 0) break
                 try {
@@ -161,14 +160,19 @@ class GgApiBridge(
 
     private inner class GetResults : OneArgFunction() {
         override fun call(maxCount: LuaValue): LuaValue {
-            val limit = if (maxCount.isnil()) Int.MAX_VALUE else maxCount.checkint().coerceAtLeast(0)
-            return toLuaResultTable(getResults(limit))
+            val requested = when {
+                maxCount.isnil() -> Int.MAX_VALUE
+                maxCount.isnumber() -> maxCount.todouble().toLong()
+                    .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+                else -> maxCount.checkint().coerceAtLeast(0)
+            }
+            return toLuaResultTable(getResults(requested))
         }
     }
 
     private inner class GetResultsCount : ZeroArgFunction() {
         override fun call(): LuaValue {
-            return LuaValue.valueOf(onGetResultsCount())
+            return LuaValue.valueOf(onGetResultsCount().toDouble())
         }
     }
 
@@ -196,6 +200,7 @@ class GgApiBridge(
             }
             val table = items.checktable()
             for (i in 1..table.length()) {
+                throwIfInterrupted()
                 val row = table.get(i)
                 if (!row.istable()) continue
                 val addr = parseAddress(row.get("address")) ?: continue
@@ -223,6 +228,7 @@ class GgApiBridge(
             val table = items.checktable()
             var ok = true
             for (i in 1..table.length()) {
+                throwIfInterrupted()
                 val row = table.get(i)
                 if (!row.istable()) continue
                 val addr = parseAddress(row.get("address")) ?: continue
@@ -314,6 +320,12 @@ class GgApiBridge(
         }
     }
 
+    private fun throwIfInterrupted() {
+        if (shouldInterrupt()) {
+            throw LuaError("script interrupted")
+        }
+    }
+
     private fun parseAddress(value: LuaValue): Long? {
         return when {
             value.isstring() -> ScriptAddress.parse(value.tojstring())
@@ -340,6 +352,11 @@ class GgApiBridge(
 
     companion object {
         private const val MAX_COPY_BYTES = 1024 * 1024
+
+        fun clampResultLimit(requested: Int, total: Long): Int {
+            if (requested <= 0 || total <= 0L) return 0
+            return minOf(requested.toLong(), total, Int.MAX_VALUE.toLong()).toInt()
+        }
 
         fun SearchResultItem.toScriptResultItem(): ScriptResultItem {
             val (address, value) = when (this) {

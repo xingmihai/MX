@@ -103,7 +103,7 @@ class ScriptRuntimeTest : FunSpec({
     }
 
     test("gg.getResultsCount 与 clearResults") {
-        var count = 3
+        var count = 3L
         val api = fakeApi(
             onGetResultsCount = { count },
             onClearResults = { count = 0 }
@@ -113,6 +113,44 @@ class ScriptRuntimeTest : FunSpec({
         globals.get("gg").get("getResultsCount").call().toint() shouldBe 3
         globals.get("gg").get("clearResults").call()
         globals.get("gg").get("getResultCount").call().toint() shouldBe 0
+    }
+
+    test("gg.getResultsCount 保留超过 Int.MAX_VALUE 的总数") {
+        val huge = Int.MAX_VALUE.toLong() + 100L
+        val api = fakeApi(onGetResultsCount = { huge })
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        globals.get("gg").get("getResultsCount").call().todouble().toLong() shouldBe huge
+        GgApiBridge.clampResultLimit(Int.MAX_VALUE, huge) shouldBe Int.MAX_VALUE
+        GgApiBridge.clampResultLimit(10, huge) shouldBe 10
+        GgApiBridge.clampResultLimit(10, -1) shouldBe 0
+    }
+
+    test("gg.setValues 循环中响应中断") {
+        var wrote = 0
+        val api = fakeApi(
+            bound = true,
+            writeMemory = { _, _ ->
+                wrote++
+                true
+            }
+        )
+        api.shouldInterrupt = { wrote >= 2 }
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val items = LuaValue.tableOf()
+        repeat(5) { index ->
+            val row = LuaValue.tableOf()
+            row.set("address", LuaValue.valueOf("0x${(index + 1) * 16}"))
+            row.set("flags", globals.get("gg").get("TYPE_DWORD"))
+            row.set("value", LuaValue.valueOf(1))
+            items.set(index + 1, row)
+        }
+        val error = runCatching {
+            globals.get("gg").get("setValues").call(items)
+        }.exceptionOrNull()
+        error.shouldNotBeNull().message.shouldContain("interrupted")
+        wrote shouldBe 2
     }
 
     test("gg.getValues 按 flags 回填 value") {
@@ -377,7 +415,7 @@ private fun fakeApi(
     onToast: (String) -> Unit = {},
     readMemory: (Long, Int) -> ByteArray? = { _, _ -> null },
     writeMemory: (Long, ByteArray) -> Boolean = { _, _ -> false },
-    onGetResultsCount: () -> Int = { results.size },
+    onGetResultsCount: () -> Long = { results.size.toLong() },
     onClearResults: () -> Unit = {},
     onGetMemoryRanges: (String?) -> List<ScriptMemoryRange> = { emptyList() },
     onCopyText: (String) -> Unit = {},
