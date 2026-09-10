@@ -93,24 +93,6 @@
         android:textColor="@color/floating_text_secondary"
         android:visibility="gone" />
 
-    <ScrollView
-        android:layout_width="match_parent"
-        android:layout_height="100dp"
-        android:layout_marginBottom="@dimen/floating_spacing_md"
-        android:background="@drawable/bg_transparent_border"
-        android:fillViewport="true">
-
-        <TextView
-            android:id="@+id/output_text"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:padding="@dimen/floating_spacing_sm"
-            android:text="@string/script_output_hint"
-            android:textColor="@color/floating_text_secondary"
-            android:textSize="@dimen/floating_text_caption"
-            android:typeface="monospace" />
-    </ScrollView>
-
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

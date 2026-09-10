@@ -401,6 +401,175 @@ class ScriptRuntimeTest : FunSpec({
         ByteBuffer.wrap(memory[0x1000L]!!).order(ByteOrder.LITTLE_ENDIAN).int shouldBe 99
     }
 
+    test("gg.alert 返回点击的按钮索引") {
+        var captured: ScriptAlertRequest? = null
+        val api = fakeApi(
+            onAlert = { req -> captured = req; 2 }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val r = globals.get("gg").get("alert").call(
+            LuaValue.valueOf("继续吗?"),
+            LuaValue.valueOf("是"),
+            LuaValue.valueOf("否"),
+            LuaValue.valueOf("以后")
+        )
+        r.toint() shouldBe 2
+        captured.shouldNotBeNull()
+        captured!!.message shouldBe "继续吗?"
+        captured!!.positive shouldBe "是"
+        captured!!.negative shouldBe "否"
+        captured!!.neutral shouldBe "以后"
+    }
+
+    test("gg.alert 用户取消返回 -1") {
+        val api = fakeApi(onAlert = { null })
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        globals.get("gg").get("alert").call(
+            LuaValue.valueOf("hi")
+        ).toint() shouldBe -1
+    }
+
+    test("gg.choice 返回选中索引(1-based)") {
+        var captured: ScriptChoiceRequest? = null
+        val api = fakeApi(
+            onChoice = { req -> captured = req; 3 }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val items = LuaValue.tableOf()
+        items.set(1, LuaValue.valueOf("A"))
+        items.set(2, LuaValue.valueOf("B"))
+        items.set(3, LuaValue.valueOf("C"))
+        val r = globals.get("gg").get("choice").call(
+            items,
+            LuaValue.valueOf(2),
+            LuaValue.valueOf("选一个")
+        )
+        r.toint() shouldBe 3
+        captured.shouldNotBeNull()
+        captured!!.items shouldBe listOf("A", "B", "C")
+        captured!!.selected shouldBe 2
+        captured!!.message shouldBe "选一个"
+    }
+
+    test("gg.choice 用户取消返回 nil") {
+        val api = fakeApi(onChoice = { null })
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val items = LuaValue.tableOf()
+        items.set(1, LuaValue.valueOf("A"))
+        val r = globals.get("gg").get("choice").call(items)
+        r.isnil() shouldBe true
+    }
+
+    test("gg.multiChoice 返回选中索引->true 的表") {
+        val api = fakeApi(
+            onMultiChoice = { listOf(1, 3) }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val items = LuaValue.tableOf()
+        items.set(1, LuaValue.valueOf("A"))
+        items.set(2, LuaValue.valueOf("B"))
+        items.set(3, LuaValue.valueOf("C"))
+        val r = globals.get("gg").get("multiChoice").call(items)
+        r.istable() shouldBe true
+        r.get(1).toboolean() shouldBe true
+        r.get(2).isnil() shouldBe true
+        r.get(3).toboolean() shouldBe true
+    }
+
+    test("gg.multiChoice 将 arg2 布尔表解析为预选索引") {
+        // 回归测试:早期版本丢弃 arg2 布尔表,导致无法回填初始勾选状态。
+        var captured: ScriptChoiceRequest? = null
+        val api = fakeApi(
+            onMultiChoice = { req ->
+                captured = req
+                // 用户未修改勾选,直接返回预选项
+                req.preselected.sorted()
+            }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val items = LuaValue.tableOf()
+        items.set(1, LuaValue.valueOf("A"))
+        items.set(2, LuaValue.valueOf("B"))
+        items.set(3, LuaValue.valueOf("C"))
+        items.set(4, LuaValue.valueOf("D"))
+        // arg2: 布尔表,勾选第 1、3 项
+        val selected = LuaValue.tableOf()
+        selected.set(1, LuaValue.TRUE)
+        selected.set(2, LuaValue.FALSE)
+        selected.set(3, LuaValue.TRUE)
+        selected.set(4, LuaValue.NIL) // 未提供视为 false
+        val r = globals.get("gg").get("multiChoice").call(
+            items,
+            selected,
+            LuaValue.valueOf("多选")
+        )
+        r.istable() shouldBe true
+        r.get(1).toboolean() shouldBe true
+        r.get(2).isnil() shouldBe true
+        r.get(3).toboolean() shouldBe true
+        r.get(4).isnil() shouldBe true
+        captured.shouldNotBeNull()
+        captured!!.items shouldBe listOf("A", "B", "C", "D")
+        captured!!.preselected shouldBe setOf(1, 3)
+        captured!!.message shouldBe "多选"
+    }
+
+    test("gg.multiChoice 无 arg2 时 preselected 为空") {
+        var captured: ScriptChoiceRequest? = null
+        val api = fakeApi(
+            onMultiChoice = { req -> captured = req; emptyList() }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val items = LuaValue.tableOf()
+        items.set(1, LuaValue.valueOf("A"))
+        globals.get("gg").get("multiChoice").call(items)
+        captured.shouldNotBeNull()
+        captured!!.preselected shouldBe emptySet()
+    }
+
+    test("gg.prompt 返回输入值表") {
+        var captured: ScriptPromptRequest? = null
+        val api = fakeApi(
+            onPrompt = { req -> captured = req; listOf("alice", "100") }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val labels = LuaValue.tableOf()
+        labels.set(1, LuaValue.valueOf("名字"))
+        labels.set(2, LuaValue.valueOf("分数"))
+        val defaults = LuaValue.tableOf()
+        defaults.set(1, LuaValue.valueOf("player"))
+        defaults.set(2, LuaValue.valueOf(0))
+        val types = LuaValue.tableOf()
+        types.set(1, LuaValue.valueOf("text"))
+        types.set(2, LuaValue.valueOf("number"))
+        val r = globals.get("gg").get("prompt").call(labels, defaults, types)
+        r.istable() shouldBe true
+        r.get(1).tojstring() shouldBe "alice"
+        r.get(2).tojstring() shouldBe "100"
+        captured.shouldNotBeNull()
+        captured!!.labels shouldBe listOf("名字", "分数")
+        captured!!.defaults shouldBe listOf("player", "0")
+        captured!!.types shouldBe listOf("text", "number")
+    }
+
+    test("gg.prompt 用户取消返回 nil") {
+        val api = fakeApi(onPrompt = { null })
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val labels = LuaValue.tableOf()
+        labels.set(1, LuaValue.valueOf("名字"))
+        val r = globals.get("gg").get("prompt").call(labels)
+        r.isnil() shouldBe true
+    }
+
     test("脚本仓库保存与载入") {
         val dir = File(System.getProperty("java.io.tmpdir"), "mamu-script-test-${System.nanoTime()}")
         dir.mkdirs()
@@ -503,7 +672,11 @@ private fun fakeApi(
     onGetMemoryRanges: (String?) -> List<ScriptMemoryRange> = { emptyList() },
     onCopyText: (String) -> Unit = {},
     onFreeze: (Long, ByteArray, Int) -> Boolean = { _, _, _ -> false },
-    onUnfreeze: (Long) -> Boolean = { false }
+    onUnfreeze: (Long) -> Boolean = { false },
+    onAlert: (ScriptAlertRequest) -> Int? = { null },
+    onChoice: (ScriptChoiceRequest) -> Int? = { null },
+    onMultiChoice: (ScriptChoiceRequest) -> List<Int>? = { null },
+    onPrompt: (ScriptPromptRequest) -> List<String>? = { null }
 ): GgApiBridge {
     return GgApiBridge(
         selectedResults = selected,
@@ -520,6 +693,10 @@ private fun fakeApi(
         onGetMemoryRanges = onGetMemoryRanges,
         onCopyText = onCopyText,
         onFreeze = onFreeze,
-        onUnfreeze = onUnfreeze
+        onUnfreeze = onUnfreeze,
+        onAlert = onAlert,
+        onChoice = onChoice,
+        onMultiChoice = onMultiChoice,
+        onPrompt = onPrompt
     )
 }

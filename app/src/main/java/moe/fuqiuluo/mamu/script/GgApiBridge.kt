@@ -9,9 +9,11 @@ import moe.fuqiuluo.mamu.utils.ValueTypeUtils
 import org.luaj.vm2.LuaError
 import org.luaj.vm2.LuaTable
 import org.luaj.vm2.LuaValue
+import org.luaj.vm2.Varargs
 import org.luaj.vm2.lib.OneArgFunction
 import org.luaj.vm2.lib.ThreeArgFunction
 import org.luaj.vm2.lib.TwoArgFunction
+import org.luaj.vm2.lib.VarArgFunction
 import org.luaj.vm2.lib.ZeroArgFunction
 
 class GgApiBridge(
@@ -29,7 +31,12 @@ class GgApiBridge(
     private val onGetMemoryRanges: (String?) -> List<ScriptMemoryRange> = { emptyList() },
     private val onCopyText: (String) -> Unit = {},
     private val onFreeze: (Long, ByteArray, Int) -> Boolean = { _, _, _ -> false },
-    private val onUnfreeze: (Long) -> Boolean = { false }
+    private val onUnfreeze: (Long) -> Boolean = { false },
+    // 交互式对话框回调。运行在 worker 线程,需阻塞等待主线程 UI 结果。返回 null 表示用户取消。
+    private val onAlert: (ScriptAlertRequest) -> Int? = { null },
+    private val onChoice: (ScriptChoiceRequest) -> Int? = { null },
+    private val onMultiChoice: (ScriptChoiceRequest) -> List<Int>? = { null },
+    private val onPrompt: (ScriptPromptRequest) -> List<String>? = { null }
 ) {
     var shouldInterrupt: () -> Boolean = { false }
 
@@ -73,6 +80,10 @@ class GgApiBridge(
         gg.set("copyMemory", CopyMemory())
         gg.set("getRangesList", GetRangesList())
         gg.set("makeRequest", MakeRequest())
+        gg.set("alert", AlertFn())
+        gg.set("choice", ChoiceFn())
+        gg.set("multiChoice", MultiChoiceFn())
+        gg.set("prompt", PromptFn())
         globals.set("gg", gg)
     }
 
@@ -356,6 +367,97 @@ class GgApiBridge(
                 table.set("error", result.error)
             }
             return table
+        }
+    }
+
+    // gg.alert(message, [positive, [negative, [neutral]]]) -> 1|2|3|-1
+    // 返回: 1=positive, 2=negative, 3=neutral, -1=用户关闭对话框
+    private inner class AlertFn : VarArgFunction() {
+        override fun invoke(args: Varargs): Varargs {
+            throwIfInterrupted()
+            val message = args.arg(1).takeIf { it.isstring() }?.tojstring().orEmpty()
+            val positive = args.arg(2).takeIf { it.isstring() }?.tojstring()
+            val negative = args.arg(3).takeIf { it.isstring() }?.tojstring()
+            val neutral = args.arg(4).takeIf { it.isstring() }?.tojstring()
+            val result = onAlert(ScriptAlertRequest(message, positive, negative, neutral))
+            throwIfInterrupted()
+            return LuaValue.valueOf(result ?: -1)
+        }
+    }
+
+    // gg.choice(items, [selected, [message]]) -> index|nil
+    // items: 字符串数组; selected: 预选索引(1-based)或 nil; message: 标题
+    // 返回: 选中的 1-based 索引,用户取消返回 nil
+    private inner class ChoiceFn : VarArgFunction() {
+        override fun invoke(args: Varargs): Varargs {
+            throwIfInterrupted()
+            val itemsTable = args.arg(1).takeIf { it.istable() }
+            if (itemsTable == null) return NIL
+            val items = (1..itemsTable.length()).mapNotNull { i ->
+                itemsTable.get(i).takeIf { it.isstring() }?.tojstring()
+            }
+            val selectedArg = args.arg(2).takeIf { it.isint() }?.toint()
+            val selected = selectedArg?.let { if (it in 1..items.size) it else null }
+            val message = args.arg(3).takeIf { it.isstring() }?.tojstring()
+            val result = onChoice(ScriptChoiceRequest(items, selected, message))
+            throwIfInterrupted()
+            return result?.let { LuaValue.valueOf(it) } ?: NIL
+        }
+    }
+
+    // gg.multiChoice(items, [selected, [message]]) -> table|nil
+    // 返回: 仅含被选中项的索引->true 的表,用户取消返回 nil
+    private inner class MultiChoiceFn : VarArgFunction() {
+        override fun invoke(args: Varargs): Varargs {
+            throwIfInterrupted()
+            val itemsTable = args.arg(1).takeIf { it.istable() }
+            if (itemsTable == null) return NIL
+            val items = (1..itemsTable.length()).mapNotNull { i ->
+                itemsTable.get(i).takeIf { it.isstring() }?.tojstring()
+            }
+            // 解析 arg2 布尔表为预选(勾选)索引集合(1-based)。
+            // 早期版本丢弃该参数,导致 multiChoice 无法显示初始勾选状态。
+            val selectedArg = args.arg(2).takeIf { it.istable() }
+            val preselected = selectedArg?.let { tbl ->
+                (1..items.size).filter { i -> tbl.get(i).toboolean() }.toSet()
+            } ?: emptySet()
+            val message = args.arg(3).takeIf { it.isstring() }?.tojstring()
+            val result = onMultiChoice(ScriptChoiceRequest(items, null, message, preselected))
+            throwIfInterrupted()
+            if (result == null) return NIL
+            val out = LuaTable()
+            result.forEach { idx -> if (idx in 1..items.size) out.set(idx, LuaValue.TRUE) }
+            return out
+        }
+    }
+
+    // gg.prompt(labels, [defaults, [types]]) -> table|nil
+    // labels: 字符串数组; defaults: 字符串/数字数组; types: "text"|"number"|"decimal"
+    // 返回: 索引->字符串值的表,用户取消返回 nil
+    private inner class PromptFn : VarArgFunction() {
+        override fun invoke(args: Varargs): Varargs {
+            throwIfInterrupted()
+            val labelsTable = args.arg(1).takeIf { it.istable() }
+            if (labelsTable == null) return NIL
+            val labels = (1..labelsTable.length()).mapNotNull { i ->
+                labelsTable.get(i).takeIf { it.isstring() }?.tojstring()
+            }
+            val defaultsTable = args.arg(2).takeIf { it.istable() }
+            val defaults = (1..labels.size).map { i ->
+                defaultsTable?.get(i)?.takeIf { it.isstring() || it.isnumber() }?.tojstring().orEmpty()
+            }
+            val typesTable = args.arg(3).takeIf { it.istable() }
+            val types = (1..labels.size).map { i ->
+                typesTable?.get(i)?.takeIf { it.isstring() }?.tojstring() ?: "text"
+            }
+            val result = onPrompt(ScriptPromptRequest(labels, defaults, types))
+            throwIfInterrupted()
+            if (result == null) return NIL
+            val out = LuaTable()
+            result.forEachIndexed { index, value ->
+                if (index < labels.size) out.set(index + 1, LuaValue.valueOf(value))
+            }
+            return out
         }
     }
 

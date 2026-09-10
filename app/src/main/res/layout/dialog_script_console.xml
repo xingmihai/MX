@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<moe.fuqiuluo.mamu.widget.FixedLinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root_container"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/dialog_background"
+    android:elevation="@dimen/floating_elevation_dialog"
+    android:minWidth="280dp"
+    android:orientation="vertical"
+    app:maxHeightPercent="0.8"
+    app:maxWidthPercent="0.85">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="@dimen/floating_spacing_lg"
+        android:paddingBottom="@dimen/floating_spacing_md">
+
+        <com.google.android.material.textview.MaterialTextView
+            android:id="@+id/console_title"
+            style="@style/FloatingText.H2"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/script_console_title" />
+
+        <ImageView
+            android:id="@+id/btn_copy"
+            android:layout_width="@dimen/floating_icon_lg"
+            android:layout_height="@dimen/floating_icon_lg"
+            android:background="@drawable/ripple_item_background"
+            android:contentDescription="@string/script_console_copy"
+            android:padding="@dimen/floating_spacing_xs"
+            android:src="@drawable/icon_arrow_left_alt_24px" />
+    </LinearLayout>
+
+    <com.google.android.material.divider.MaterialDivider
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="@dimen/floating_spacing_lg"
+        app:dividerColor="@color/floating_divider" />
+
+    <ScrollView
+        android:id="@+id/console_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@drawable/bg_transparent_border"
+        android:fillViewport="true">
+
+        <TextView
+            android:id="@+id/console_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="@dimen/floating_spacing_sm"
+            android:textColor="@color/floating_text_primary"
+            android:textColorHint="@color/floating_text_secondary"
+            android:textIsSelectable="true"
+            android:textSize="@dimen/floating_text_caption"
+            android:typeface="monospace" />
+    </ScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="end"
+        android:orientation="horizontal"
+        android:padding="@dimen/floating_spacing_md">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_clear"
+            style="@style/FloatingButton.Text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minWidth="@dimen/floating_min_button_width"
+            android:text="@string/script_console_clear" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_close"
+            style="@style/FloatingButton.Text.White"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minWidth="@dimen/floating_min_button_width"
+            android:text="@string/script_console_close" />
+    </LinearLayout>
+
+</moe.fuqiuluo.mamu.widget.FixedLinearLayout>

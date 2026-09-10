@@ -25,15 +25,21 @@ import moe.fuqiuluo.mamu.driver.SearchEngine
 import moe.fuqiuluo.mamu.driver.WuwaDriver
 import moe.fuqiuluo.mamu.script.GgApiBridge
 import moe.fuqiuluo.mamu.script.GgApiBridge.Companion.toScriptResultItem
+import moe.fuqiuluo.mamu.script.ScriptAlertRequest
+import moe.fuqiuluo.mamu.script.ScriptChoiceRequest
 import moe.fuqiuluo.mamu.script.ScriptEndReason
 import moe.fuqiuluo.mamu.script.ScriptFsEntry
 import moe.fuqiuluo.mamu.script.ScriptHost
 import moe.fuqiuluo.mamu.script.ScriptLocalBrowser
 import moe.fuqiuluo.mamu.script.ScriptMemoryRange
 import moe.fuqiuluo.mamu.script.ScriptPaths
+import moe.fuqiuluo.mamu.script.ScriptPromptRequest
 import moe.fuqiuluo.mamu.script.ScriptResultItem
 import moe.fuqiuluo.mamu.script.ScriptUrlFetcher
 import moe.fuqiuluo.mamu.widget.NotificationOverlay
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 class ScriptDialog(
     context: Context,
@@ -46,8 +52,31 @@ class ScriptDialog(
     private val host = ScriptHost(poster = { mainHandler.post(it) })
     private lateinit var binding: DialogScriptBinding
     private lateinit var adapter: EntryAdapter
-    private var outputCleared = false
     private var currentPath = ScriptPaths.DEFAULT_DIR
+    private var console: ScriptConsoleDialog? = null
+    // 当前正在显示的交互弹窗(alert/choice/prompt)。脚本停止/父弹窗关闭时一并 dismiss,
+    // 避免脚本已结束后交互弹窗仍悬浮或在新会话才弹出。
+    @Volatile
+    private var activeInteractive: BaseDialog? = null
+    // 标记 ScriptDialog 已 release。release 后排队的 appendOutput 不应再创建新控制台,
+    // 否则会复活一个孤立的悬浮窗(脚本会话已结束)。
+    @Volatile
+    private var released = false
+    // 暴露 released 状态供外部(SearchController)判断实例是否可复用:
+    // 若已 released,重新打开应创建新实例而非 show() 复用(否则后续输出/交互被丢弃)。
+    val isReleased: Boolean get() = released
+    // 标记脚本被用户停止(Stop)。与 [released] 不同:ScriptDialog 仍开着,最后的输出
+    // 仍应显示,但不应再显示新的交互弹窗(避免排队的 alert/choice/prompt 在停止后弹出)。
+    // 新会话开始时(runLocalFile/runUrl/executeSource)重置为 false。
+    @Volatile
+    private var stopped = false
+    // 会话代次(generation)。每次启动新会话自增,使被 Stop 的旧会话 IO 完成后
+    // 因 epoch 不匹配而放弃执行,避免"新会话重置 stopped=true 后旧会话复活"。
+    // 例如:脚本 A 加载中被 Stop(stopped=true),用户启动 B(stopped=false,epoch++),
+    // A 的 IO 完成后核对 epoch 已变化,直接 return,不会执行 A。
+    private val sessionEpoch = AtomicLong(0L)
+
+    private fun shouldBlockInteractive(): Boolean = released || stopped
 
     val isRunning: Boolean
         get() = host.isRunning
@@ -74,14 +103,19 @@ class ScriptDialog(
         binding.entryList.adapter = adapter
 
         if (!WuwaDriver.isProcessBound) {
-            appendOutput(context.getString(R.string.script_unbound))
+            notification.showWarning(context.getString(R.string.script_unbound))
         }
 
         binding.btnUp.setOnClickListener {
             ScriptPaths.parent(currentPath)?.let { openDirectory(it) }
         }
         binding.btnRunUrl.setOnClickListener { runUrl() }
-        binding.btnStop.setOnClickListener { host.stop() }
+        binding.btnStop.setOnClickListener {
+            // 标记停止:阻止排队中的交互弹窗在停止后弹出,并 dismiss 当前的。
+            stopped = true
+            mainHandler.post { dismissActiveInteractive() }
+            host.stop()
+        }
         binding.btnClose.setOnClickListener {
             onCancel?.invoke()
             dismiss()
@@ -111,13 +145,23 @@ class ScriptDialog(
     }
 
     private fun runLocalFile(path: String) {
+        // 新会话启动点:自增 epoch 并重置 released/stopped 标志,确保后续输出进入控制台、
+        // 交互弹窗正常显示。此处运行在主线程,与 release()/Stop 的写入互斥。
+        val epoch = sessionEpoch.incrementAndGet()
+        released = false
+        stopped = false
         coroutineScope.launch {
             val source = withContext(Dispatchers.IO) {
                 runCatching { ScriptLocalBrowser.read(path) }
             }.getOrElse { error ->
-                appendOutput(error.message ?: context.getString(R.string.script_read_failed))
+                // 仅当仍是当前会话时才报告错误,避免覆盖新会话输出。
+                if (sessionEpoch.get() == epoch && !released) {
+                    appendOutput(error.message ?: context.getString(R.string.script_read_failed))
+                }
                 return@launch
             }
+            // 核对 epoch:若期间用户 Stop 后启动了新会话(或释放),放弃执行本会话。
+            if (sessionEpoch.get() != epoch || shouldBlockInteractive()) return@launch
             appendOutput(context.getString(R.string.script_running_local, path))
             executeSource(source)
         }
@@ -130,15 +174,22 @@ class ScriptDialog(
             appendOutput(invalid)
             return
         }
-        if (host.isRunning) return
+        // 不再因 host.isRunning 静默丢弃:ScriptHost.execute 会 interrupt 旧 worker。
+        // 新会话启动点:同 runLocalFile,自增 epoch 并重置 released/stopped 再起协程。
+        val epoch = sessionEpoch.incrementAndGet()
+        released = false
+        stopped = false
         coroutineScope.launch {
             appendOutput(context.getString(R.string.script_downloading))
             val source = withContext(Dispatchers.IO) {
                 runCatching { ScriptUrlFetcher.fetch(url) }
             }.getOrElse { error ->
-                appendOutput(error.message ?: context.getString(R.string.script_download_failed))
+                if (sessionEpoch.get() == epoch && !released) {
+                    appendOutput(error.message ?: context.getString(R.string.script_download_failed))
+                }
                 return@launch
             }
+            if (sessionEpoch.get() != epoch || shouldBlockInteractive()) return@launch
             executeSource(source)
         }
     }
@@ -148,16 +199,35 @@ class ScriptDialog(
             appendOutput(context.getString(R.string.script_empty))
             return
         }
-        if (host.isRunning) return
-        outputCleared = false
-        binding.outputText.text = ""
+        // 不再因 host.isRunning 静默丢弃:ScriptHost.execute 会 interrupt 仍在 unwind 的
+        // 旧 worker 并启动新会话,确保用户启动 B 时 B 优先执行而非被静默忽略。
+        // 协程恢复时若会话已关闭或脚本已停止,直接放弃执行,避免启动孤立脚本与控制台。
+        if (shouldBlockInteractive()) return
+        // 切换脚本前清空控制台并关闭上一会话遗留的交互弹窗(若 A 正在 alert/choice/
+        // prompt 等待,启动 B 时应关闭它,否则 A 的弹窗会在 B 期间悬浮且不被跟踪)。
+        dismissActiveInteractive()
+        // 切换脚本前清空控制台,新会话从空白开始。所有 console 访问统一在主线程。
+        val previousConsole = console
+        console = null
+        previousConsole?.let { c -> mainHandler.post { c.dismiss() } }
         updateRunningState(true)
+        // 捕获本次会话的 epoch,供 onOutput/onWarn/onFinished 回调在 post 块内核对,
+        // 避免旧会话的排队回调写入新会话的控制台或应用错误的 finished 状态。
+        val epoch = sessionEpoch.get()
         val api = GgApiBridge(
             selectedResults = getSelectedResults(),
             onToast = { message ->
-                mainHandler.post { notification.showWarning(message) }
+                mainHandler.post {
+                    if (sessionEpoch.get() != epoch || released) return@post
+                    notification.showWarning(message)
+                }
             },
-            onWarn = { message -> mainHandler.post { appendOutput(message) } },
+            onWarn = { message ->
+                mainHandler.post {
+                    if (sessionEpoch.get() != epoch || released) return@post
+                    appendOutput(message)
+                }
+            },
             getResults = { maxCount ->
                 val count = GgApiBridge.clampResultLimit(
                     maxCount,
@@ -181,25 +251,121 @@ class ScriptDialog(
             onGetMemoryRanges = { filter -> listMemoryRanges(filter) },
             onCopyText = { text -> copyText(text) },
             onFreeze = { addr, bytes, typeId -> FreezeManager.addFrozen(addr, bytes, typeId) },
-            onUnfreeze = { addr -> FreezeManager.removeFrozen(addr) }
+            onUnfreeze = { addr -> FreezeManager.removeFrozen(addr) },
+            onAlert = { request -> runBlockingDialog(epoch) { showAlertDialog(request, it) } },
+            onChoice = { request ->
+                runBlockingDialog(epoch) { showChoiceDialog(request, multiSelect = false, it) }?.firstOrNull()
+            },
+            onMultiChoice = { request ->
+                runBlockingDialog(epoch) { showChoiceDialog(request, multiSelect = true, it) }
+            },
+            onPrompt = { request -> runBlockingDialog(epoch) { showPromptDialog(request, it) } }
         )
         host.execute(
             source = source,
             api = api,
-            onOutput = { line -> appendOutput(line) },
-            onFinished = { reason ->
-                when (reason) {
-                    ScriptEndReason.Completed -> appendOutput(context.getString(R.string.script_completed))
-                    ScriptEndReason.Stopped -> appendOutput(context.getString(R.string.script_stopped))
-                    ScriptEndReason.Timeout -> appendOutput(context.getString(R.string.script_timeout))
-                    is ScriptEndReason.Error -> {
-                        val prefix = if (reason.line != null) "错误: 行${reason.line}: " else "错误: "
-                        appendOutput(prefix + reason.message)
-                    }
+            onOutput = { line ->
+                mainHandler.post {
+                    // 核对 epoch:旧会话排队的输出不写入新会话控制台。
+                    if (sessionEpoch.get() != epoch || released) return@post
+                    appendOutput(line)
                 }
-                updateRunningState(false)
+            },
+            onFinished = { reason ->
+                mainHandler.post {
+                    // 旧会话的完成回调不应用到新会话:不 dismiss 其交互弹窗,
+                    // 不写入其完成消息,不切换其运行状态。
+                    if (sessionEpoch.get() != epoch || released) return@post
+                    // 脚本结束:若仍有交互弹窗未关闭则关闭之,避免悬浮残留。
+                    dismissActiveInteractive()
+                    when (reason) {
+                        ScriptEndReason.Completed -> appendOutput(context.getString(R.string.script_completed))
+                        ScriptEndReason.Stopped -> appendOutput(context.getString(R.string.script_stopped))
+                        ScriptEndReason.Timeout -> appendOutput(context.getString(R.string.script_timeout))
+                        is ScriptEndReason.Error -> {
+                            val prefix = if (reason.line != null) "错误: 行${reason.line}: " else "错误: "
+                            appendOutput(prefix + reason.message)
+                        }
+                    }
+                    updateRunningState(false)
+                }
             }
         )
+    }
+
+    /**
+     * 阻塞 Lua worker 线程直到主线程弹出 UI 并回调结果。
+     * [show] 在主线程执行,其回调参数完成时计数 down,返回回调传入的值。
+     * worker 在等待期间被中断时会抛 LuaError(由调用方处理 shouldInterrupt)。
+     */
+    private fun <T> runBlockingDialog(expectedEpoch: Long, show: (onResult: (T?) -> Unit) -> Unit): T? {
+        val latch = CountDownLatch(1)
+        val result = AtomicReference<T?>()
+        mainHandler.post {
+            // 会话已切换(epoch 不匹配)、已释放或脚本已停止:不再显示新弹窗,
+            // 立即返回 null 解除 worker 阻塞,否则旧会话的 alert/choice/prompt
+            // 会在新会话期间打开,阻塞或向已废弃的 worker 回传输入。
+            if (sessionEpoch.get() != expectedEpoch || shouldBlockInteractive()) {
+                result.set(null)
+                latch.countDown()
+                return@post
+            }
+            try {
+                show { value ->
+                    result.set(value)
+                    latch.countDown()
+                }
+            } catch (e: Throwable) {
+                result.set(null)
+                latch.countDown()
+            }
+        }
+        try {
+            latch.await()
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        return result.get()
+    }
+
+    private fun showAlertDialog(request: ScriptAlertRequest, onResult: (Int?) -> Unit) {
+        showInteractive(ScriptAlertDialog(context, request, onResult))
+    }
+
+    private fun showChoiceDialog(
+        request: ScriptChoiceRequest,
+        multiSelect: Boolean,
+        onResult: (List<Int>?) -> Unit
+    ) {
+        showInteractive(ScriptChoiceDialog(context, request, multiSelect, onResult))
+    }
+
+    private fun showPromptDialog(request: ScriptPromptRequest, onResult: (List<String>?) -> Unit) {
+        showInteractive(ScriptPromptDialog(context, request, onResult))
+    }
+
+    /**
+     * 跟踪当前交互弹窗。脚本停止或 ScriptDialog 关闭时通过 [dismissActiveInteractive]
+     * 一并 dismiss,避免脚本结束后弹窗仍悬浮,或排队中的弹窗在父关闭后才弹出。
+     * 各弹窗的 reported 守卫保证回调只会触发一次,故强制 dismiss 会安全返回 null。
+     */
+    private fun showInteractive(dialog: BaseDialog) {
+        // 会话已释放或脚本已停止:不再显示新弹窗,直接 dismiss 该实例避免泄漏。
+        if (shouldBlockInteractive()) {
+            dialog.dismiss()
+            return
+        }
+        activeInteractive = dialog
+        dialog.onDismiss = {
+            if (activeInteractive === dialog) activeInteractive = null
+        }
+        dialog.show()
+    }
+
+    private fun dismissActiveInteractive() {
+        val d = activeInteractive
+        activeInteractive = null
+        d?.dismiss()
     }
 
     private fun copyText(text: String) {
@@ -226,17 +392,21 @@ class ScriptDialog(
     }
 
     private fun appendOutput(line: String) {
-        if (!::binding.isInitialized) return
-        val current = binding.outputText.text?.toString().orEmpty()
-        val next = if (!outputCleared && current == context.getString(R.string.script_output_hint)) {
-            line
-        } else if (current.isEmpty()) {
-            line
-        } else {
-            current + "\n" + line
+        // 输出统一进入弹出式控制台,与官方 GG 行为一致。
+        // 调用方(onOutput/onWarn/onFinished/executeSource)已在主线程并通过 epoch 检查,
+        // 此处不再 mainHandler.post,避免嵌套 post 绕过 epoch 守卫导致跨会话串扰。
+        // release 后的输出直接丢弃,避免复活已关闭的控制台导致孤立悬浮窗。
+        if (released) return
+        val c = console ?: ScriptConsoleDialog(context).also { newConsole ->
+            // 用户点关闭按钮或返回键后,清掉缓存引用,使下次输出会重新弹出新窗口,
+            // 而不是继续往已 dismiss 的视图里追加(否则后续输出不可见)。
+            newConsole.onDismiss = {
+                if (console === newConsole) console = null
+            }
+            newConsole.show()
+            console = newConsole
         }
-        outputCleared = true
-        binding.outputText.text = next
+        c.append(line)
     }
 
     private fun updateRunningState(running: Boolean) {
@@ -249,7 +419,13 @@ class ScriptDialog(
     }
 
     fun release() {
+        // 标记已释放:后续排队的 appendOutput 不再复活控制台。
+        released = true
         host.stop()
+        // 关闭当前交互弹窗(若有),避免脚本停止后悬浮残留。
+        mainHandler.post { dismissActiveInteractive() }
+        console?.let { c -> mainHandler.post { c.dismiss() } }
+        console = null
     }
 
     override fun dismiss() {
