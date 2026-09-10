@@ -271,10 +271,13 @@ class ScriptDialog(
             onIsVisible = { overlayVisible.get() },
             onSetVisible = { v ->
                 overlayVisible.set(v)
-                // 在主线程真正隐藏/显示 dialog,使 overlayVisible 与实际窗口可见性一致。
-                // 使用 dialog.hide() 而非 dismiss():dismiss 会触发 release() 停止脚本,
-                // hide 仅隐藏窗口但保持 Dialog 实例存活,脚本可继续运行且用户可 setVisible(true) 恢复显示。
+                // 捕获当前会话代次,防止旧会话排队的 show/hide 在会话切换后误执行
+                val capturedEpoch = epoch
                 mainHandler.post {
+                    // 过期守卫:epoch 不匹配(会话已切换/释放)或 overlayVisible 已被新操作覆盖
+                    // (例如用户通过 show() 重开、新会话重置),丢弃此过期操作。
+                    if (sessionEpoch.get() != capturedEpoch || released) return@post
+                    if (overlayVisible.get() != v) return@post
                     if (v) {
                         if (!dialog.isShowing) show()
                     } else {
