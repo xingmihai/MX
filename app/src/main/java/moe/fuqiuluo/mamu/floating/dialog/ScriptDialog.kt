@@ -62,6 +62,9 @@ class ScriptDialog(
     // 否则会复活一个孤立的悬浮窗(脚本会话已结束)。
     @Volatile
     private var released = false
+    // 暴露 released 状态供外部(SearchController)判断实例是否可复用:
+    // 若已 released,重新打开应创建新实例而非 show() 复用(否则后续输出/交互被丢弃)。
+    val isReleased: Boolean get() = released
     // 标记脚本被用户停止(Stop)。与 [released] 不同:ScriptDialog 仍开着,最后的输出
     // 仍应显示,但不应再显示新的交互弹窗(避免排队的 alert/choice/prompt 在停止后弹出)。
     // 新会话开始时(runLocalFile/runUrl/executeSource)重置为 false。

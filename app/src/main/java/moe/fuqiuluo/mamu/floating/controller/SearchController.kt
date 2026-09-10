@@ -1411,8 +1411,12 @@ class SearchController(
     }
 
     private fun showScriptDialog() {
-        if (scriptDialog?.isRunning == true) {
-            scriptDialog?.show()
+        // 复用条件:实例存在、未 release、且仍 running。
+        // 若已 release(用户关闭过 dialog 即使 worker 还在 unwind),不复用——
+        // 否则 show() 旧实例后 released 仍 true,输出/完成回调被丢弃,交互被阻塞。
+        val existing = scriptDialog
+        if (existing != null && !existing.isReleased && existing.isRunning) {
+            existing.show()
             return
         }
         scriptDialog = ScriptDialog(
@@ -1425,9 +1429,10 @@ class SearchController(
             onClearSearchResults = { clearSearchResultsFromScript() }
         ).apply {
             onCancel = {
-                if (!isRunning) {
-                    scriptDialog = null
-                }
+                // 无论是否 running,已 cancel 即置 null:
+                // release() 已在 dismiss() 中调用并 host.stop(),
+                // 旧 worker 由旧 host 的 epoch/shouldStop 处理,不复用本实例。
+                scriptDialog = null
             }
         }
         scriptDialog?.show()

@@ -97,8 +97,10 @@ class ScriptHost(
             }
         }
         // 等待本 worker 真正退出再返回,使 executor 的下一个任务在本 worker 结束后才开始,
-        // 保证串行。executor 线程(非主线程)阻塞在此可接受。
-        try { worker?.join() } catch (_: InterruptedException) {}
+        // 保证串行。带超时:worker 内部受 shouldStop(timeoutMs) 约束,正常会在 timeoutMs
+        // 内退出;若在非可中断代码中卡死,超时后放弃等待(已 interrupt 过,风险可控),
+        // 让新会话能执行而非永远排队。
+        try { worker?.join(timeoutMs + 2_000) } catch (_: InterruptedException) {}
     }
 
     fun stop() {
