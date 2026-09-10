@@ -117,6 +117,8 @@ class ScriptPromptDialog(
             holder.boundPosition = RecyclerView.NO_POSITION
         }
 
+        override fun getItemCount(): Int = request.labels.size
+
         fun getValues(): List<String> = values.toList()
     }
 }
