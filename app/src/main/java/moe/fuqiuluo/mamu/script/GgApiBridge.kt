@@ -135,10 +135,14 @@ class GgApiBridge(
     private inner class SleepFn : OneArgFunction() {
         override fun call(ms: LuaValue): LuaValue {
             val duration = if (ms.isnil()) 0L else ms.todouble().toLong().coerceAtLeast(0)
-            val endAt = System.currentTimeMillis() + duration
+            val startAt = System.currentTimeMillis()
             while (true) {
                 throwIfInterrupted()
-                val remain = endAt - System.currentTimeMillis()
+                // Compute remaining via subtraction instead of start + duration so that
+                // durations near Long.MAX_VALUE (e.g. gg.sleep(math.huge)) don't overflow
+                // into a past deadline. Clamp elapsed to guard against clock rollback.
+                val elapsed = (System.currentTimeMillis() - startAt).coerceAtLeast(0)
+                val remain = duration - elapsed
                 if (remain <= 0) break
                 try {
                     Thread.sleep(minOf(remain, 50L))
@@ -160,11 +164,16 @@ class GgApiBridge(
 
     private inner class GetResults : OneArgFunction() {
         override fun call(maxCount: LuaValue): LuaValue {
+            // Omitting the argument (or passing nil) used to request Int.MAX_VALUE,
+            // forcing the JNI bridge to materialize every match and read its value
+            // before we build the Lua table. Large result sets can exhaust memory or
+            // block the worker long enough to make the app unusable. Impose a safe
+            // upper bound instead.
             val requested = when {
-                maxCount.isnil() -> Int.MAX_VALUE
+                maxCount.isnil() -> MAX_GET_RESULTS
                 maxCount.isnumber() -> maxCount.todouble().toLong()
-                    .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
-                else -> maxCount.checkint().coerceAtLeast(0)
+                    .coerceIn(1L, MAX_GET_RESULTS.toLong()).toInt()
+                else -> maxCount.checkint().coerceIn(1, MAX_GET_RESULTS)
             }
             return toLuaResultTable(getResults(requested))
         }
@@ -355,6 +364,7 @@ class GgApiBridge(
 
     companion object {
         private const val MAX_COPY_BYTES = 1024 * 1024
+        private const val MAX_GET_RESULTS = 100_000
 
         fun clampResultLimit(requested: Int, total: Long): Int {
             if (requested <= 0 || total <= 0L) return 0
