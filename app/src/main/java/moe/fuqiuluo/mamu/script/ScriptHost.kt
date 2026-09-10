@@ -91,6 +91,7 @@ class ScriptHost(
                     debugHook = debugLib
                 )
                 api.shouldInterrupt = shouldStop
+                ScriptUrlFetcher.shouldInterrupt = shouldStop
                 api.install(globals)
                 globals.load(source, "script").call()
                 when {
