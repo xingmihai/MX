@@ -171,7 +171,7 @@ class ScriptDialog(
             appendOutput(invalid)
             return
         }
-        if (host.isRunning) return
+        // 不再因 host.isRunning 静默丢弃:ScriptHost.execute 会 interrupt 旧 worker。
         // 新会话启动点:同 runLocalFile,自增 epoch 并重置 released/stopped 再起协程。
         val epoch = sessionEpoch.incrementAndGet()
         released = false
@@ -196,7 +196,8 @@ class ScriptDialog(
             appendOutput(context.getString(R.string.script_empty))
             return
         }
-        if (host.isRunning) return
+        // 不再因 host.isRunning 静默丢弃:ScriptHost.execute 会 interrupt 仍在 unwind 的
+        // 旧 worker 并启动新会话,确保用户启动 B 时 B 优先执行而非被静默忽略。
         // 协程恢复时若会话已关闭或脚本已停止,直接放弃执行,避免启动孤立脚本与控制台。
         if (shouldBlockInteractive()) return
         // 切换脚本前清空控制台,新会话从空白开始。所有 console 访问统一在主线程。
