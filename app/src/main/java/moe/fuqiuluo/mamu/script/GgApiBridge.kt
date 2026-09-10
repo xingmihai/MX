@@ -502,20 +502,12 @@ class GgApiBridge(
      */
     private fun resolveWriteType(baseType: DisplayValueType, value: LuaValue): DisplayValueType {
         if (baseType != DisplayValueType.AUTO) return baseType
-        return ValueTypeUtils.inferAutoType(rawForInference(value))
-    }
-
-    private fun rawForInference(value: LuaValue): String {
-        return when {
-            value.isnumber() -> {
-                val d = value.todouble()
-                // 不能直接用 toLong()：超出 Long 区间的整数会被饱和成 Long.MAX_VALUE，
-                // 于是 1e19 会被推断成 Qword 但实际写进去的是 9223372036854775807。
-                // 无法表示为 64 位整数时退回原始 double 字面量，让 AUTO 推断成 Double。
-                integerStringOrNull(d) ?: d.toString()
-            }
-            else -> runCatching { value.tojstring() }.getOrDefault("")
-        }
+        // 数字必须走 Double 重载：先转字符串会把 5.7 截断成 "5"，
+        // 导致 AUTO 推断成 Dword 并按整数写入，丢掉小数部分。
+        if (value.isnumber()) return ValueTypeUtils.inferAutoType(value.todouble())
+        return ValueTypeUtils.inferAutoType(
+            runCatching { value.tojstring() }.getOrDefault("")
+        )
     }
 
     /**

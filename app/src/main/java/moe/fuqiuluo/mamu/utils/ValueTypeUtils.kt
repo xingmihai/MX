@@ -46,6 +46,44 @@ object ValueTypeUtils {
     }
 
     /**
+     * 推断 gg.TYPE_AUTO 写入时应使用的具体类型（Lua number 版本）。
+     *
+     * 必须直接基于 Double 判断，不能先转成字符串：
+     *  - 若按整数处理，5.7 会被截断成 "5"，于是推断成 Dword 并按整数 5 写入，
+     *    小数部分静默丢失；
+     *  - 超出 Long 区间的整数会被 toLong() 饱和成 Long.MAX_VALUE。
+     *
+     * 规则：整数按数值范围落进 Dword / Qword，超出 64 位整数范围时退化为 Double；
+     * 小数按是否落在 float 范围内落进 Float / Double。
+     *
+     * @return 推断出的具体类型（永不为 AUTO）
+     */
+    fun inferAutoType(value: Double): DisplayValueType {
+        if (!value.isFinite()) return DisplayValueType.DOUBLE
+
+        if (value % 1.0 == 0.0) {
+            val asLong = when {
+                value >= -POW_2_63 && value < POW_2_63 -> value.toLong()
+                value >= POW_2_63 && value < POW_2_64 -> value.toULong().toLong()
+                // 超出 64 位整数表示范围，只能用浮点承载。
+                else -> return DisplayValueType.DOUBLE
+            }
+            return if (asLong in Int.MIN_VALUE.toLong()..0xFFFFFFFFL) {
+                DisplayValueType.DWORD
+            } else {
+                DisplayValueType.QWORD
+            }
+        }
+
+        val fitsFloat = value >= -Float.MAX_VALUE.toDouble() &&
+            value <= Float.MAX_VALUE.toDouble()
+        return if (fitsFloat) DisplayValueType.FLOAT else DisplayValueType.DOUBLE
+    }
+
+    private const val POW_2_63 = 9223372036854775808.0
+    private const val POW_2_64 = 18446744073709551616.0
+
+    /**
      * Parse expression string to byte array based on value type
      * @param expr Input expression string
      * @param valueType Target value type for conversion
