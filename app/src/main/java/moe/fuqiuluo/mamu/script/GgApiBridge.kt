@@ -168,12 +168,12 @@ class GgApiBridge(
             // forcing the JNI bridge to materialize every match and read its value
             // before we build the Lua table. Large result sets can exhaust memory or
             // block the worker long enough to make the app unusable. Impose a safe
-            // upper bound instead.
+            // upper bound instead. 0 is a valid request (returns no results).
             val requested = when {
                 maxCount.isnil() -> MAX_GET_RESULTS
                 maxCount.isnumber() -> maxCount.todouble().toLong()
-                    .coerceIn(1L, MAX_GET_RESULTS.toLong()).toInt()
-                else -> maxCount.checkint().coerceIn(1, MAX_GET_RESULTS)
+                    .coerceIn(0L, MAX_GET_RESULTS.toLong()).toInt()
+                else -> maxCount.checkint().coerceIn(0, MAX_GET_RESULTS)
             }
             return toLuaResultTable(getResults(requested))
         }
@@ -239,8 +239,15 @@ class GgApiBridge(
             for (i in 1..table.length()) {
                 throwIfInterrupted()
                 val row = table.get(i)
-                if (!row.istable()) continue
-                val addr = parseAddress(row.get("address")) ?: continue
+                if (!row.istable()) {
+                    ok = false
+                    continue
+                }
+                val addr = parseAddress(row.get("address"))
+                if (addr == null) {
+                    ok = false
+                    continue
+                }
                 val flags = row.get("flags").optint(ScriptTypeFlags.DWORD)
                 val displayType = ScriptTypeFlags.toDisplayType(flags)
                     ?: throw LuaError("unsupported type flag: $flags")
