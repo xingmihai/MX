@@ -204,12 +204,23 @@ class ScriptDialog(
         console = null
         previousConsole?.let { c -> mainHandler.post { c.dismiss() } }
         updateRunningState(true)
+        // 捕获本次会话的 epoch,供 onOutput/onWarn/onFinished 回调在 post 块内核对,
+        // 避免旧会话的排队回调写入新会话的控制台或应用错误的 finished 状态。
+        val epoch = sessionEpoch.get()
         val api = GgApiBridge(
             selectedResults = getSelectedResults(),
             onToast = { message ->
-                mainHandler.post { notification.showWarning(message) }
+                mainHandler.post {
+                    if (sessionEpoch.get() != epoch || released) return@post
+                    notification.showWarning(message)
+                }
             },
-            onWarn = { message -> mainHandler.post { appendOutput(message) } },
+            onWarn = { message ->
+                mainHandler.post {
+                    if (sessionEpoch.get() != epoch || released) return@post
+                    appendOutput(message)
+                }
+            },
             getResults = { maxCount ->
                 val count = GgApiBridge.clampResultLimit(
                     maxCount,
@@ -246,20 +257,31 @@ class ScriptDialog(
         host.execute(
             source = source,
             api = api,
-            onOutput = { line -> appendOutput(line) },
-            onFinished = { reason ->
-                // 脚本结束:若仍有交互弹窗未关闭则关闭之,避免悬浮残留。
-                mainHandler.post { dismissActiveInteractive() }
-                when (reason) {
-                    ScriptEndReason.Completed -> appendOutput(context.getString(R.string.script_completed))
-                    ScriptEndReason.Stopped -> appendOutput(context.getString(R.string.script_stopped))
-                    ScriptEndReason.Timeout -> appendOutput(context.getString(R.string.script_timeout))
-                    is ScriptEndReason.Error -> {
-                        val prefix = if (reason.line != null) "错误: 行${reason.line}: " else "错误: "
-                        appendOutput(prefix + reason.message)
-                    }
+            onOutput = { line ->
+                mainHandler.post {
+                    // 核对 epoch:旧会话排队的输出不写入新会话控制台。
+                    if (sessionEpoch.get() != epoch || released) return@post
+                    appendOutput(line)
                 }
-                updateRunningState(false)
+            },
+            onFinished = { reason ->
+                mainHandler.post {
+                    // 旧会话的完成回调不应用到新会话:不 dismiss 其交互弹窗,
+                    // 不写入其完成消息,不切换其运行状态。
+                    if (sessionEpoch.get() != epoch || released) return@post
+                    // 脚本结束:若仍有交互弹窗未关闭则关闭之,避免悬浮残留。
+                    dismissActiveInteractive()
+                    when (reason) {
+                        ScriptEndReason.Completed -> appendOutput(context.getString(R.string.script_completed))
+                        ScriptEndReason.Stopped -> appendOutput(context.getString(R.string.script_stopped))
+                        ScriptEndReason.Timeout -> appendOutput(context.getString(R.string.script_timeout))
+                        is ScriptEndReason.Error -> {
+                            val prefix = if (reason.line != null) "错误: 行${reason.line}: " else "错误: "
+                            appendOutput(prefix + reason.message)
+                        }
+                    }
+                    updateRunningState(false)
+                }
             }
         )
     }
