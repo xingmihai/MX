@@ -89,9 +89,12 @@ class ScriptDialog(
     // 独立于 MMKV，避免脚本改动污染 UI 设置。
     private val scriptRanges: MutableSet<MemoryRange> =
         MMKV.defaultMMKV().selectedMemoryRanges.toMutableSet()
-    // gg.getRanges 需要回显 GG 位掩码，记录最近一次设置的值。
+    // gg.getRanges 回显的 GG 位掩码。必须与 scriptRanges 保持同步，
+    // 且初值由 scriptRanges 反推：否则脚本"保存 → 切换 → 用保存值恢复"时
+    // 拿到的是 0，setRanges(0) 被拒绝，临时区域就残留下来了。
     @Volatile
-    private var scriptRegionFlags: Int = 0
+    private var scriptRegionFlags: Int =
+        ScriptRegions.fromRangeCodes(scriptRanges.map { it.code }.toSet())
 
     private fun shouldBlockInteractive(): Boolean = released || stopped
 
@@ -291,6 +294,7 @@ class ScriptDialog(
             onCancelSearch = { runCatching { SearchEngine.requestCancel() } },
             onSetRanges = { flags -> applyScriptRanges(flags) },
             onGetRanges = { scriptRegionFlags },
+            onEditAll = { bytes -> editAllResults(bytes) },
             onSetVisible = { v ->
                 // 先写后校验(乐观模式):先写 overlayVisible,然后再检查 epoch/released。
                 // 旧会话 worker 可能在检查与写入之间被抢占,而新会话 incrementAndGet 已执行。
@@ -461,8 +465,12 @@ class ScriptDialog(
      */
     private fun scriptSearchStatus(): ScriptSearchStatus {
         return when (SearchEngine.getStatus()) {
+            // 状态位 published 早于 native 的 JoinHandle 结束，而启动新搜索前
+            // 的 busy 检查看的是那个 handle。若这里只看状态位就返回完成，
+            // 紧随其后的 refineNumber / searchNumber 可能撞上 busy 而失败，
+            // 顺序执行的脚本会莫名其妙中断。所以两个条件都要满足。
             SearchEngine.Status.COMPLETED ->
-                ScriptSearchStatus(true, SearchEngine.getTotalResultCount(), null)
+                ScriptSearchStatus(!SearchEngine.isSearching(), SearchEngine.getTotalResultCount(), null)
 
             SearchEngine.Status.CANCELLED ->
                 ScriptSearchStatus(true, 0L, "搜索已取消")
@@ -473,6 +481,32 @@ class ScriptDialog(
             else ->
                 ScriptSearchStatus(false, SearchEngine.getFoundCount().coerceAtLeast(0L), null)
         }
+    }
+
+    /**
+     * 把同一段字节写入当前结果列表的全部条目。
+     *
+     * 必须分页：一次 getResults 受 MAX_GET_RESULTS 上限约束，而 DWORD 搜 0
+     * 这类宽搜索的匹配数远超该值。gg.editAll 承诺改写全部结果，
+     * 只写第一页会静默漏掉后面的匹配。
+     */
+    private fun editAllResults(bytes: ByteArray): Int {
+        if (!WuwaDriver.isProcessBound) return 0
+        val total = SearchEngine.getTotalResultCount().coerceAtLeast(0L)
+        if (total <= 0L) return 0
+        var written = 0
+        var offset = 0
+        while (offset < total) {
+            val count = minOf(EDIT_ALL_PAGE_SIZE.toLong(), total - offset).toInt()
+            val page = runCatching { SearchEngine.getResults(offset, count) }.getOrNull()
+                ?: break
+            if (page.isEmpty()) break
+            page.forEach { item ->
+                if (WuwaDriver.writeMemory(item.address, bytes)) written++
+            }
+            offset += count
+        }
+        return written
     }
 
     private fun applyScriptRanges(flags: Int): Boolean {
@@ -605,5 +639,7 @@ class ScriptDialog(
 
     companion object {
         private const val LAST_DIR_KEY = "script_browser_last_dir"
+        // gg.editAll 分页写入时每页的条目数。
+        private const val EDIT_ALL_PAGE_SIZE = 4096
     }
 }

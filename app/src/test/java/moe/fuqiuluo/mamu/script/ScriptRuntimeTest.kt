@@ -706,8 +706,12 @@ class ScriptRuntimeTest : FunSpec({
         val globals = SandboxGlobals.create(onPrint = {})
         api.install(globals)
         val table = globals.get("gg").get("getResults").call(LuaValue.valueOf(10))
-        table.get(1).get("value").isnumber() shouldBe true
+        // 必须用 type() 断言真实 Lua 类型：LuaJ 的 isnumber()/todouble() 对
+        // 数字字符串也成立，用 isnumber() 断言的话即使退回字符串也会通过，
+        // 抓不到本次要修的回归。
+        table.get(1).get("value").type() shouldBe LuaValue.TNUMBER
         table.get(1).get("value").todouble() shouldBe 42.0
+        table.get(2).get("value").type() shouldBe LuaValue.TNUMBER
         table.get(2).get("value").todouble() shouldBe 1.5
     }
 
@@ -721,7 +725,7 @@ class ScriptRuntimeTest : FunSpec({
         val globals = SandboxGlobals.create(onPrint = {})
         api.install(globals)
         val table = globals.get("gg").get("getResults").call(LuaValue.valueOf(1))
-        table.get(1).get("value").isstring() shouldBe true
+        table.get(1).get("value").type() shouldBe LuaValue.TSTRING
         table.get(1).get("value").tojstring() shouldBe huge
     }
 
@@ -742,11 +746,50 @@ class ScriptRuntimeTest : FunSpec({
         globals.get("gg").get("getTargetPackage").call().tojstring() shouldBe "com.example.game"
     }
 
-    test("gg.setRanges 拒绝无法识别的 flags") {
-        val api = fakeApi()
+    test("区域掩码与 code 集合互为逆运算") {
+        val flags = ScriptRegions.C_HEAP or ScriptRegions.ANONYMOUS or ScriptRegions.CODE_APP
+        val codes = ScriptRegions.toRangeCodes(flags)
+        ScriptRegions.fromRangeCodes(codes) shouldBe flags
+    }
+
+    test("gg.searchNumber 保留大数字符串的精度") {
+        var captured: String? = null
+        val api = fakeApi(
+            bound = true,
+            onStartSearch = { query, _ ->
+                captured = query
+                true
+            },
+            onSearchStatus = { ScriptSearchStatus(true, 0L, null) }
+        )
         val globals = SandboxGlobals.create(onPrint = {})
         api.install(globals)
-        // 默认注入的 onSetRanges 返回 false，模拟没有任何已知位被置上
+        globals.get("gg").get("searchNumber").call(
+            LuaValue.valueOf("9007199254740993"),
+            globals.get("gg").get("TYPE_QWORD")
+        )
+        captured shouldBe "9007199254740993"
+    }
+
+    test("gg.searchNumber 拒绝加密搜索") {
+        val api = fakeApi(bound = true)
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val error = runCatching {
+            globals.get("gg").get("searchNumber").call(
+                LuaValue.valueOf(123),
+                globals.get("gg").get("TYPE_DWORD"),
+                LuaValue.TRUE
+            )
+        }.exceptionOrNull()
+        error.shouldNotBeNull().message.shouldContain("加密")
+    }
+
+    test("gg.setRanges 拒绝无法识别的 flags") {
+        // onSetRanges 返回 false 模拟"没有任何已知位被置上"
+        val api = fakeApi(onSetRanges = { false })
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
         globals.get("gg").get("setRanges").call(LuaValue.valueOf(0)).toboolean() shouldBe false
     }
 })
@@ -768,7 +811,14 @@ private fun fakeApi(
     onAlert: (ScriptAlertRequest) -> Int? = { null },
     onChoice: (ScriptChoiceRequest) -> Int? = { null },
     onMultiChoice: (ScriptChoiceRequest) -> List<Int>? = { null },
-    onPrompt: (ScriptPromptRequest) -> List<String>? = { null }
+    onPrompt: (ScriptPromptRequest) -> List<String>? = { null },
+    onStartSearch: (String, DisplayValueType) -> Boolean = { _, _ -> false },
+    onStartRefine: (String, DisplayValueType) -> Boolean = { _, _ -> false },
+    onSearchStatus: () -> ScriptSearchStatus = { ScriptSearchStatus(true, 0L, null) },
+    onCancelSearch: () -> Unit = {},
+    onSetRanges: (Int) -> Boolean = { true },
+    onGetRanges: () -> Int = { 0 },
+    onEditAll: (ByteArray) -> Int = { 0 }
 ): GgApiBridge {
     return GgApiBridge(
         selectedResults = selected,
@@ -789,6 +839,13 @@ private fun fakeApi(
         onAlert = onAlert,
         onChoice = onChoice,
         onMultiChoice = onMultiChoice,
-        onPrompt = onPrompt
+        onPrompt = onPrompt,
+        onStartSearch = onStartSearch,
+        onStartRefine = onStartRefine,
+        onSearchStatus = onSearchStatus,
+        onCancelSearch = onCancelSearch,
+        onSetRanges = onSetRanges,
+        onGetRanges = onGetRanges,
+        onEditAll = onEditAll
     )
 }

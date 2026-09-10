@@ -50,7 +50,11 @@ class GgApiBridge(
     },
     private val onCancelSearch: () -> Unit = {},
     private val onSetRanges: (Int) -> Boolean = { false },
-    private val onGetRanges: () -> Int = { 0 }
+    private val onGetRanges: () -> Int = { 0 },
+    // 把同一段字节写入当前结果列表的每一项，返回成功条数。
+    // 单独成回调而不复用 getResults：getResults 受 MAX_GET_RESULTS 限制且只取
+    // 第一页，gg.editAll 承诺改写"全部"结果，必须走分页路径。
+    private val onEditAll: (ByteArray) -> Int = { 0 }
 ) {
     var shouldInterrupt: () -> Boolean = { false }
 
@@ -748,13 +752,8 @@ class GgApiBridge(
                 value
             )
             val bytes = encodeValue(value, type) ?: return LuaValue.valueOf(0)
-            val items = getResults(MAX_GET_RESULTS)
-            var written = 0
-            for (item in items) {
-                throwIfInterrupted()
-                if (writeMemory(item.address, bytes)) written++
-            }
-            return LuaValue.valueOf(written.toDouble())
+            // 走宿主的分页批量写入，覆盖全部结果而不只是前 MAX_GET_RESULTS 条。
+            return LuaValue.valueOf(onEditAll(bytes).toDouble())
         }
     }
 
@@ -787,22 +786,51 @@ class GgApiBridge(
         }
     }
 
+    /**
+     * 取得搜索值的字符串形式。
+     *
+     * 必须先看 Lua 的真实类型再看是否能当数字用：LuaJ 的 isnumber() 对
+     * "123" 这类数字字符串同样返回 true，若先走数字分支，
+     * gg.searchNumber("9007199254740993", gg.TYPE_QWORD) 会经 double
+     * 变成 9007199254740992 —— 脚本想搜的精确大数被静默改掉了。
+     * 因此字符串一律原样保留，只有真正的 Lua number 才做数值转换。
+     */
     private fun queryOf(value: LuaValue): String {
         return when {
             value.isnil() -> throw LuaError("gg: 搜索值为空")
-            value.isnumber() -> {
-                val d = value.todouble()
-                if (d % 1.0 == 0.0) d.toLong().toString() else d.toString()
-            }
+            value.isstring() -> value.tojstring()
+            value.isnumber() -> numberToQueryString(value.todouble())
             else -> value.tojstring()
         }
+    }
+
+    /**
+     * 把 Lua number 转成搜索用的整数/小数字符串。
+     *
+     * 不能直接 toLong()：1e20 这类超范围的整数值会被饱和成 Long.MAX_VALUE，
+     * 于是搜索的是另一个数且不报错。无法表示为 64 位整数时退回科学计数法
+     * 字符串，让 native 侧按自己的规则解析（而不是拿到一个被截断的值）。
+     */
+    private fun numberToQueryString(d: Double): String {
+        if (!d.isFinite()) throw LuaError("gg: 搜索值不是有限数值")
+        if (d % 1.0 != 0.0) return d.toString()
+        val asInteger = integerStringOrNull(d)
+        if (asInteger == null) {
+            onWarn("gg: 搜索值超出 64 位整数范围，请改用字符串传值")
+            return d.toString()
+        }
+        return asInteger
     }
 
     private fun resolveSearchType(flags: Int, query: String, encrypted: Boolean): DisplayValueType {
         val declared = ScriptTypeFlags.toDisplayType(flags)
             ?: throw LuaError("unsupported type flag: $flags")
-        // GG 里 encrypted=true 表示按 XOR 加密值搜索。
-        if (encrypted && declared == DisplayValueType.DWORD) return DisplayValueType.XOR
+        // GG 的 encrypted=true 表示按 XOR 加密值搜索，需要引擎在读取时先解密。
+        // 本项目的搜索引擎只对原始字节做比较，映射到 XOR 只是改了个类型编号，
+        // 结果仍是明文匹配——看起来"搜到了"实则完全错误，所以直接拒绝。
+        if (encrypted) {
+            throw LuaError("gg: 暂不支持加密(encrypted)搜索")
+        }
         if (declared != DisplayValueType.AUTO) return declared
         // AUTO 按搜索值本身推断；整数落 Dword/Qword，小数落 Float/Double。
         return ValueTypeUtils.inferAutoType(query)

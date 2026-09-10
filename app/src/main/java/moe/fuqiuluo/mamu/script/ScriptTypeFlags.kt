@@ -102,4 +102,34 @@ object ScriptRegions {
         add(OTHER, "O")
         return codes
     }
+
+    /**
+     * [toRangeCodes] 的逆运算：把区域 code 集合还原成 GG 位掩码。
+     *
+     * 必须成对存在，否则 gg.getRanges() 在脚本调用 setRanges 之前只能返回 0，
+     * 而"保存初始区域 → 临时切换 → 用保存值恢复"是脚本的常见写法，
+     * 恢复时 setRanges(0) 会被判为无法识别而拒绝，临时筛选就此残留。
+     */
+    fun fromRangeCodes(codes: Set<String>): Int {
+        val bits = mapOf(
+            "Ch" to C_HEAP,
+            "Jh" to JAVA_HEAP,
+            "Ca" to C_ALLOC,
+            "Cd" to C_DATA,
+            "Cb" to C_BSS,
+            "An" to ANONYMOUS,
+            "S" to STACK,
+            "Xa" to CODE_APP,
+            "Xs" to CODE_SYS,
+            "B" to BAD,
+            "J" to JAVA,
+            "Ps" to PPSSPP,
+            "As" to ASHMEM,
+            "V" to VIDEO,
+            "O" to OTHER
+        )
+        var flags = 0
+        codes.forEach { code -> bits[code]?.let { flags = flags or it } }
+        return flags
+    }
 }
