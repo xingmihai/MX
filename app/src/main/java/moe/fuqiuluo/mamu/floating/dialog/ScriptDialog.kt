@@ -210,12 +210,11 @@ class ScriptDialog(
         if (shouldBlockInteractive()) return
         // 切换脚本前重置悬浮窗可见性,避免上一会话 setVisible(false) 泄漏到新会话,
         // 导致事件驱动脚本(while true + isVisible)首次查询就拿到 false 而跳过 Main。
-        // 同时确保 dialog 真的可见(上一会话可能 hide 了窗口),防止 isVisible=true 但
-        // 窗口仍隐藏的状态不同步。
+        // 注意:不在这里排队 show() —— 若脚本立即 setVisible(false),排队的 show()
+        // 会在主线程恢复 overlayVisible=true 导致 hide() 的过期守卫把自己拒掉,
+        // 最终窗口停留在 visible 状态。dialog 可见性由 SearchController.showScriptDialog()
+        // 的 show() 负责(新/复用场景都经过它),executeSource 只重置 flag 保证状态一致。
         overlayVisible.set(true)
-        // 注意:Android Dialog.hide() 不会改变 isShowing 状态,这里直接 show()
-        // 让被上一会话 hide 的窗口恢复显示,不能依赖 isShowing 判断。
-        mainHandler.post { show() }
         // 切换脚本前清空控制台并关闭上一会话遗留的交互弹窗(若 A 正在 alert/choice/
         // prompt 等待,启动 B 时应关闭它,否则 A 的弹窗会在 B 期间悬浮且不被跟踪)。
         dismissActiveInteractive()
@@ -275,10 +274,15 @@ class ScriptDialog(
             onPrompt = { request -> runBlockingDialog(epoch) { showPromptDialog(request, it) } },
             onIsVisible = { overlayVisible.get() },
             onSetVisible = { v ->
-                // 过期守卫先于 overlayVisible 写入:旧会话 worker 可能在会话已切换后
-                // 仍在调用 setVisible,若直接写 flag 会污染新会话的状态。
-                if (sessionEpoch.get() != epoch || released) return@onSetVisible
+                // 先写后校验(乐观模式):先写 overlayVisible,然后再检查 epoch/released。
+                // 旧会话 worker 可能在检查与写入之间被抢占,而新会话 incrementAndGet 已执行。
+                // 这种情况下旧会话的写入会覆盖新会话的状态,所以写入后必须再校验,
+                // 若 epoch 已变则撤销写入恢复默认值。
                 overlayVisible.set(v)
+                if (sessionEpoch.get() != epoch || released) {
+                    overlayVisible.set(true)
+                    return@onSetVisible
+                }
                 mainHandler.post {
                     // 队列中的操作到主线程时再次校验:
                     // 1. epoch 仍匹配(防止 post 执行前又切换了会话)
