@@ -39,7 +39,8 @@ class ScriptDialog(
     context: Context,
     private val notification: NotificationOverlay,
     private val coroutineScope: CoroutineScope,
-    private val getSelectedResults: () -> List<ScriptResultItem>
+    private val getSelectedResults: () -> List<ScriptResultItem>,
+    private val onClearSearchResults: () -> Unit
 ) : BaseDialog(context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val host = ScriptHost(poster = { mainHandler.post(it) })
@@ -174,7 +175,7 @@ class ScriptDialog(
             onGetResultsCount = {
                 SearchEngine.getTotalResultCount().toInt().coerceAtLeast(0)
             },
-            onClearResults = { SearchEngine.clearSearchResults() },
+            onClearResults = onClearSearchResults,
             onGetMemoryRanges = { filter -> listMemoryRanges(filter) },
             onCopyText = { text -> copyText(text) },
             onFreeze = { addr, bytes, typeId -> FreezeManager.addFrozen(addr, bytes, typeId) },

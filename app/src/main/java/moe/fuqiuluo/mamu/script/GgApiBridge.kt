@@ -31,6 +31,7 @@ class GgApiBridge(
     private val onFreeze: (Long, ByteArray, Int) -> Boolean = { _, _, _ -> false },
     private val onUnfreeze: (Long) -> Boolean = { false }
 ) {
+    var shouldInterrupt: () -> Boolean = { false }
     fun install(globals: org.luaj.vm2.Globals) {
         val gg = LuaTable()
         gg.set("TYPE_BYTE", ScriptTypeFlags.BYTE)
@@ -135,6 +136,9 @@ class GgApiBridge(
             val duration = if (ms.isnil()) 0L else ms.todouble().toLong().coerceAtLeast(0)
             val endAt = System.currentTimeMillis() + duration
             while (true) {
+                if (shouldInterrupt()) {
+                    throw LuaError("script interrupted")
+                }
                 val remain = endAt - System.currentTimeMillis()
                 if (remain <= 0) break
                 try {

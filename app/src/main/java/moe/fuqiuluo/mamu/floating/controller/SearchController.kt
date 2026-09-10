@@ -947,9 +947,20 @@ class SearchController(
             withContext(Dispatchers.IO) {
                 SearchEngine.clearSearchResults()
             }
-            searchResultAdapter.clearResults()
-            showEmptyState(true)
-            updateSearchResultCount(0, null) // 清空结果
+            resetSearchResultsUi()
+        }
+    }
+
+    private fun resetSearchResultsUi() {
+        searchResultAdapter.clearResults()
+        showEmptyState(true)
+        updateSearchResultCount(0, null)
+    }
+
+    private fun clearSearchResultsFromScript() {
+        SearchEngine.clearSearchResults()
+        coroutineScope.launch {
+            resetSearchResultsUi()
         }
     }
 
@@ -1410,7 +1421,8 @@ class SearchController(
             coroutineScope = coroutineScope,
             getSelectedResults = {
                 searchResultAdapter.getSelectedItems().map { it.toScriptResultItem() }
-            }
+            },
+            onClearSearchResults = { clearSearchResultsFromScript() }
         ).apply {
             onCancel = {
                 if (!isRunning) {

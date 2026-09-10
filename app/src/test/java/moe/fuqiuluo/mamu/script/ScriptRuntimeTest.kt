@@ -1,6 +1,7 @@
 package moe.fuqiuluo.mamu.script
 
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.longs.shouldBeLessThan
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
@@ -308,6 +309,25 @@ class ScriptRuntimeTest : FunSpec({
         finished.await(5, TimeUnit.SECONDS) shouldBe true
         outputs shouldBe listOf("hello")
         reason.get() shouldBe ScriptEndReason.Completed
+    }
+
+    test("gg.sleep 超过 ScriptHost 超时则中断") {
+        val finished = CountDownLatch(1)
+        val reason = AtomicReference<ScriptEndReason>()
+        val started = System.currentTimeMillis()
+        val host = ScriptHost(poster = { it.run() }, timeoutMs = 200)
+        host.execute(
+            source = "gg.sleep(5000)",
+            api = fakeApi(),
+            onOutput = {},
+            onFinished = {
+                reason.set(it)
+                finished.countDown()
+            }
+        )
+        finished.await(3, TimeUnit.SECONDS) shouldBe true
+        reason.get() shouldBe ScriptEndReason.Timeout
+        (System.currentTimeMillis() - started) shouldBeLessThan 1500L
     }
 
     test("语法错误返回行号") {
