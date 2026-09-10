@@ -199,6 +199,58 @@ class ScriptRuntimeTest : FunSpec({
         frozen shouldBe listOf(0x2000L)
     }
 
+    test("gg.setValues 非表行标记失败且不阻断兄弟写入") {
+        val written = mutableListOf<Long>()
+        val api = fakeApi(
+            bound = true,
+            writeMemory = { addr, _ ->
+                written.add(addr)
+                true
+            }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val items = LuaValue.tableOf()
+        // Row 1: non-table entry (a string), should be skipped and mark ok=false.
+        items.set(1, LuaValue.valueOf("not a table"))
+        // Row 2: valid entry, should still be written.
+        val valid = LuaValue.tableOf()
+        valid.set("address", LuaValue.valueOf("0x10"))
+        valid.set("flags", globals.get("gg").get("TYPE_DWORD"))
+        valid.set("value", LuaValue.valueOf(1))
+        items.set(2, valid)
+        globals.get("gg").get("setValues").call(items).toboolean() shouldBe false
+        written shouldBe listOf(0x10L)
+    }
+
+    test("gg.setValues 无效地址标记失败且不阻断兄弟写入") {
+        val written = mutableListOf<Long>()
+        val api = fakeApi(
+            bound = true,
+            writeMemory = { addr, _ ->
+                written.add(addr)
+                true
+            }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val items = LuaValue.tableOf()
+        // Row 1: table row with an unparsable address, should be skipped and mark ok=false.
+        val badAddr = LuaValue.tableOf()
+        badAddr.set("address", LuaValue.valueOf("xyz"))
+        badAddr.set("flags", globals.get("gg").get("TYPE_DWORD"))
+        badAddr.set("value", LuaValue.valueOf(1))
+        items.set(1, badAddr)
+        // Row 2: valid entry, should still be written.
+        val valid = LuaValue.tableOf()
+        valid.set("address", LuaValue.valueOf("0x20"))
+        valid.set("flags", globals.get("gg").get("TYPE_DWORD"))
+        valid.set("value", LuaValue.valueOf(2))
+        items.set(2, valid)
+        globals.get("gg").get("setValues").call(items).toboolean() shouldBe false
+        written shouldBe listOf(0x20L)
+    }
+
     test("gg.getRangesList 按名字过滤") {
         val ranges = listOf(
             ScriptMemoryRange(0x1000, 0x2000, "/system/lib/libc.so", "r-xp"),
