@@ -298,7 +298,7 @@ class ScriptDialog(
             onCancelSearch = { runCatching { SearchEngine.requestCancel() } },
             onSetRanges = { flags -> applyScriptRanges(flags) },
             onGetRanges = { scriptRegionFlags },
-            onEditAll = { bytes -> editAllResults(bytes) },
+            onEditAll = { bytes, shouldStop -> editAllResults(bytes, shouldStop) },
             onSetVisible = { v ->
                 // 先写后校验(乐观模式):先写 overlayVisible,然后再检查 epoch/released。
                 // 旧会话 worker 可能在检查与写入之间被抢占,而新会话 incrementAndGet 已执行。
@@ -494,19 +494,26 @@ class ScriptDialog(
      * 这类宽搜索的匹配数远超该值。gg.editAll 承诺改写全部结果，
      * 只写第一页会静默漏掉后面的匹配。
      */
-    private fun editAllResults(bytes: ByteArray): Int {
+    private fun editAllResults(bytes: ByteArray, shouldStop: () -> Boolean): Int {
         if (!WuwaDriver.isProcessBound) return 0
-        val total = SearchEngine.getTotalResultCount().coerceAtLeast(0L)
-        if (total <= 0L) return 0
+        val reported = SearchEngine.getTotalResultCount().coerceAtLeast(0L)
+        if (reported <= 0L) return 0
+        // SearchEngine.getResults(start: Int, count: Int) 只能按 Int 索引，
+        // 超过 Int.MAX_VALUE 的结果根本取不到。若直接拿 Long 的 total 循环，
+        // offset.toInt() 会回绕成负数，导致重复读页甚至跳页。
+        // 这里显式夹到可寻址上限，保证 offset 始终落在 Int 域内。
+        val total = minOf(reported, Int.MAX_VALUE.toLong())
         var written = 0
-        // offset 必须是 Long：total 来自 getTotalResultCount()，Int 与 Long
-        // 无法直接用 < 比较。传给 getResults 时再转回 Int。
         var offset = 0L
         while (offset < total) {
+            // 写入前必须检查中断：editAll 处理宽搜索结果时会持续很久，
+            // 用户 Stop 或脚本超时后不应继续往内存里写。
+            if (shouldStop()) break
             val count = minOf(EDIT_ALL_PAGE_SIZE.toLong(), total - offset).toInt()
             val page = runCatching { SearchEngine.getResults(offset.toInt(), count) }.getOrNull()
             if (page == null || page.isEmpty()) break
-            page.forEach { item ->
+            for (item in page) {
+                if (shouldStop()) return written
                 val address = addressOf(item)
                 // address 为 0 表示无法从该结果类型取出地址，跳过而不是写入空指针页
                 if (address != 0L && WuwaDriver.writeMemory(address, bytes)) written++

@@ -54,7 +54,9 @@ class GgApiBridge(
     // 把同一段字节写入当前结果列表的每一项，返回成功条数。
     // 单独成回调而不复用 getResults：getResults 受 MAX_GET_RESULTS 限制且只取
     // 第一页，gg.editAll 承诺改写"全部"结果，必须走分页路径。
-    private val onEditAll: (ByteArray) -> Int = { 0 }
+    // 第二个参数是中断检查，宿主必须在循环里调用它，否则用户 Stop 后
+    // 写入仍会继续（宽搜索的 editAll 可能持续很久）。
+    private val onEditAll: (ByteArray, () -> Boolean) -> Int = { _, _ -> 0 }
 ) {
     var shouldInterrupt: () -> Boolean = { false }
 
@@ -753,7 +755,12 @@ class GgApiBridge(
             )
             val bytes = encodeValue(value, type) ?: return LuaValue.valueOf(0)
             // 走宿主的分页批量写入，覆盖全部结果而不只是前 MAX_GET_RESULTS 条。
-            return LuaValue.valueOf(onEditAll(bytes).toDouble())
+            // 把中断检查传进去，让宿主循环能及时退出。
+            val written = onEditAll(bytes) { shouldInterrupt() }
+            // 写入过程中被中断时抛出，使脚本按 Stopped/Timeout 收尾，
+            // 而不是带着一个"只写了一半"的计数继续往下跑。
+            throwIfInterrupted()
+            return LuaValue.valueOf(written.toDouble())
         }
     }
 

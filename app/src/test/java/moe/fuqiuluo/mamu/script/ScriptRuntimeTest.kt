@@ -746,6 +746,29 @@ class ScriptRuntimeTest : FunSpec({
         globals.get("gg").get("getTargetPackage").call().tojstring() shouldBe "com.example.game"
     }
 
+    test("gg.editAll 在中断时停止写入") {
+        var writes = 0
+        val api = fakeApi(
+            bound = true,
+            onEditAll = { _, shouldStop ->
+                // 模拟分页写入：每次写前检查中断，触发后立即返回已写条数
+                while (writes < 10 && !shouldStop()) {
+                    writes++
+                }
+                writes
+            }
+        )
+        api.shouldInterrupt = { writes >= 3 }
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val error = runCatching {
+            globals.get("gg").get("editAll").call(LuaValue.valueOf(99))
+        }.exceptionOrNull()
+        // 中断后必须抛出，而不是带着"只写了一半"的计数继续往下跑
+        error.shouldNotBeNull().message.shouldContain("interrupted")
+        writes shouldBe 3
+    }
+
     test("区域掩码与 code 集合互为逆运算") {
         val flags = ScriptRegions.C_HEAP or ScriptRegions.ANONYMOUS or ScriptRegions.CODE_APP
         val codes = ScriptRegions.toRangeCodes(flags)
@@ -818,7 +841,7 @@ private fun fakeApi(
     onCancelSearch: () -> Unit = {},
     onSetRanges: (Int) -> Boolean = { true },
     onGetRanges: () -> Int = { 0 },
-    onEditAll: (ByteArray) -> Int = { 0 }
+    onEditAll: (ByteArray, () -> Boolean) -> Int = { _, _ -> 0 }
 ): GgApiBridge {
     return GgApiBridge(
         selectedResults = selected,
