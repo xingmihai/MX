@@ -481,6 +481,59 @@ class ScriptRuntimeTest : FunSpec({
         r.get(3).toboolean() shouldBe true
     }
 
+    test("gg.multiChoice 将 arg2 布尔表解析为预选索引") {
+        // 回归测试:早期版本丢弃 arg2 布尔表,导致无法回填初始勾选状态。
+        var captured: ScriptChoiceRequest? = null
+        val api = fakeApi(
+            onMultiChoice = { req ->
+                captured = req
+                // 用户未修改勾选,直接返回预选项
+                req.preselected.sorted()
+            }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val items = LuaValue.tableOf()
+        items.set(1, LuaValue.valueOf("A"))
+        items.set(2, LuaValue.valueOf("B"))
+        items.set(3, LuaValue.valueOf("C"))
+        items.set(4, LuaValue.valueOf("D"))
+        // arg2: 布尔表,勾选第 1、3 项
+        val selected = LuaValue.tableOf()
+        selected.set(1, LuaValue.TRUE)
+        selected.set(2, LuaValue.FALSE)
+        selected.set(3, LuaValue.TRUE)
+        selected.set(4, LuaValue.NIL) // 未提供视为 false
+        val r = globals.get("gg").get("multiChoice").call(
+            items,
+            selected,
+            LuaValue.valueOf("多选")
+        )
+        r.istable() shouldBe true
+        r.get(1).toboolean() shouldBe true
+        r.get(2).isnil() shouldBe true
+        r.get(3).toboolean() shouldBe true
+        r.get(4).isnil() shouldBe true
+        captured.shouldNotBeNull()
+        captured!!.items shouldBe listOf("A", "B", "C", "D")
+        captured!!.preselected shouldBe setOf(1, 3)
+        captured!!.message shouldBe "多选"
+    }
+
+    test("gg.multiChoice 无 arg2 时 preselected 为空") {
+        var captured: ScriptChoiceRequest? = null
+        val api = fakeApi(
+            onMultiChoice = { req -> captured = req; emptyList() }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val items = LuaValue.tableOf()
+        items.set(1, LuaValue.valueOf("A"))
+        globals.get("gg").get("multiChoice").call(items)
+        captured.shouldNotBeNull()
+        captured!!.preselected shouldBe emptySet()
+    }
+
     test("gg.prompt 返回输入值表") {
         var captured: ScriptPromptRequest? = null
         val api = fakeApi(

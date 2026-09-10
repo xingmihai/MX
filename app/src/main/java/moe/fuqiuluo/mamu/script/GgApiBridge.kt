@@ -415,9 +415,14 @@ class GgApiBridge(
             val items = (1..itemsTable.length()).mapNotNull { i ->
                 itemsTable.get(i).takeIf { it.isstring() }?.tojstring()
             }
-            // selected 预选表参数暂未接入 UI 回填,这里仅消费以保持签名兼容。
+            // 解析 arg2 布尔表为预选(勾选)索引集合(1-based)。
+            // 早期版本丢弃该参数,导致 multiChoice 无法显示初始勾选状态。
+            val selectedArg = args.arg(2).takeIf { it.istable() }
+            val preselected = selectedArg?.let { tbl ->
+                (1..items.size).filter { i -> tbl.get(i).toboolean() }.toSet()
+            } ?: emptySet()
             val message = args.arg(3).takeIf { it.isstring() }?.tojstring()
-            val result = onMultiChoice(ScriptChoiceRequest(items, null, message))
+            val result = onMultiChoice(ScriptChoiceRequest(items, null, message, preselected))
             throwIfInterrupted()
             if (result == null) return NIL
             val out = LuaTable()

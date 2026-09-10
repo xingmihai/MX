@@ -16,7 +16,12 @@ data class ScriptAlertRequest(
 data class ScriptChoiceRequest(
     val items: List<String>,
     val selected: Int?,
-    val message: String?
+    val message: String?,
+    /**
+     * 预选(勾选)项的 1-based 索引集合,主要用于 gg.multiChoice 的布尔表参数。
+     * gg.choice 单选时也可在此填预选项,但通常只用 [selected]。
+     */
+    val preselected: Set<Int> = emptySet()
 )
 
 data class ScriptPromptRequest(

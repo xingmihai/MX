@@ -26,7 +26,10 @@ class ScriptChoiceDialog(
 
     private var reported = false
     private val checked = BooleanArray(request.items.size).apply {
-        request.selected?.let { if (it in indices) set(it - 1, true) }
+        // 单选预选:selected (1-based)
+        request.selected?.let { if (it in 1..size) set(it - 1, true) }
+        // 多选预选:preselected 集合 (1-based)
+        request.preselected.forEach { idx -> if (idx in 1..size) set(idx - 1, true) }
     }
 
     override fun setupDialog() {

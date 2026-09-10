@@ -53,6 +53,10 @@ class ScriptDialog(
     private lateinit var adapter: EntryAdapter
     private var currentPath = ScriptPaths.DEFAULT_DIR
     private var console: ScriptConsoleDialog? = null
+    // 当前正在显示的交互弹窗(alert/choice/prompt)。脚本停止/父弹窗关闭时一并 dismiss,
+    // 避免脚本已结束后交互弹窗仍悬浮或在新会话才弹出。
+    @Volatile
+    private var activeInteractive: BaseDialog? = null
 
     val isRunning: Boolean
         get() = host.isRunning
@@ -203,6 +207,8 @@ class ScriptDialog(
             api = api,
             onOutput = { line -> appendOutput(line) },
             onFinished = { reason ->
+                // 脚本结束:若仍有交互弹窗未关闭则关闭之,避免悬浮残留。
+                mainHandler.post { dismissActiveInteractive() }
                 when (reason) {
                     ScriptEndReason.Completed -> appendOutput(context.getString(R.string.script_completed))
                     ScriptEndReason.Stopped -> appendOutput(context.getString(R.string.script_stopped))
@@ -245,8 +251,7 @@ class ScriptDialog(
     }
 
     private fun showAlertDialog(request: ScriptAlertRequest, onResult: (Int?) -> Unit) {
-        val dialog = ScriptAlertDialog(context, request, onResult)
-        dialog.show()
+        showInteractive(ScriptAlertDialog(context, request, onResult))
     }
 
     private fun showChoiceDialog(
@@ -254,13 +259,30 @@ class ScriptDialog(
         multiSelect: Boolean,
         onResult: (List<Int>?) -> Unit
     ) {
-        val dialog = ScriptChoiceDialog(context, request, multiSelect, onResult)
-        dialog.show()
+        showInteractive(ScriptChoiceDialog(context, request, multiSelect, onResult))
     }
 
     private fun showPromptDialog(request: ScriptPromptRequest, onResult: (List<String>?) -> Unit) {
-        val dialog = ScriptPromptDialog(context, request, onResult)
+        showInteractive(ScriptPromptDialog(context, request, onResult))
+    }
+
+    /**
+     * 跟踪当前交互弹窗。脚本停止或 ScriptDialog 关闭时通过 [dismissActiveInteractive]
+     * 一并 dismiss,避免脚本结束后弹窗仍悬浮,或排队中的弹窗在父关闭后才弹出。
+     * 各弹窗的 reported 守卫保证回调只会触发一次,故强制 dismiss 会安全返回 null。
+     */
+    private fun showInteractive(dialog: BaseDialog) {
+        activeInteractive = dialog
+        dialog.onDismiss = {
+            if (activeInteractive === dialog) activeInteractive = null
+        }
         dialog.show()
+    }
+
+    private fun dismissActiveInteractive() {
+        val d = activeInteractive
+        activeInteractive = null
+        d?.dismiss()
     }
 
     private fun copyText(text: String) {
@@ -290,6 +312,11 @@ class ScriptDialog(
         // 输出统一进入弹出式控制台,与官方 GG 行为一致。
         mainHandler.post {
             val c = console ?: ScriptConsoleDialog(context).also { newConsole ->
+                // 用户点关闭按钮或返回键后,清掉缓存引用,使下次输出会重新弹出新窗口,
+                // 而不是继续往已 dismiss 的视图里追加(否则后续输出不可见)。
+                newConsole.onDismiss = {
+                    if (console === newConsole) console = null
+                }
                 newConsole.show()
                 console = newConsole
             }
@@ -308,6 +335,8 @@ class ScriptDialog(
 
     fun release() {
         host.stop()
+        // 关闭当前交互弹窗(若有),避免脚本停止后悬浮残留。
+        mainHandler.post { dismissActiveInteractive() }
         console?.let { c -> mainHandler.post { c.dismiss() } }
         console = null
     }

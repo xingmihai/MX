@@ -1,7 +1,9 @@
 package moe.fuqiuluo.mamu.floating.dialog
 
 import android.content.Context
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -17,6 +19,9 @@ import moe.fuqiuluo.mamu.script.ScriptPromptRequest
 /**
  * gg.prompt 输入弹窗。按 [ScriptPromptRequest.types] 渲染对应输入类型。
  * 返回与 labels 等长的字符串列表,用户取消返回 null。
+ *
+ * 为避免 RecyclerView 回收离屏字段后丢失用户已输入的值,getValues() 从持久化
+ * [values] 读取,而非从当前绑定的 EditText 读取。绑定/回收时同步刷新 [values]。
  */
 class ScriptPromptDialog(
     context: Context,
@@ -56,13 +61,16 @@ class ScriptPromptDialog(
     private class PromptAdapter(private val request: ScriptPromptRequest) :
         RecyclerView.Adapter<PromptAdapter.ViewHolder>() {
 
-        // 按位置记录当前绑定的 EditText,以便读取用户输入。
-        private val editors = mutableMapOf<Int, EditText>()
+        // 持久化每个字段的当前值,绑定/回收/输入时同步,使 getValues() 不依赖
+        // 当前是否在屏上,避免离屏字段被回收后丢失已输入或默认值。
+        private val values: MutableList<String> =
+            (0 until request.labels.size).map { request.defaults.getOrNull(it).orEmpty() }.toMutableList()
 
         class ViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
             val label: TextView = itemView.findViewById(android.R.id.text1)
             val input: EditText = itemView.findViewById(android.R.id.edit)
             var boundPosition: Int = RecyclerView.NO_POSITION
+            var watcher: TextWatcher? = null
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -72,17 +80,13 @@ class ScriptPromptDialog(
         }
 
         override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-            // 持有者被复用前清掉旧位置映射,避免读到陈旧引用。
-            if (holder.boundPosition != RecyclerView.NO_POSITION) {
-                editors.remove(holder.boundPosition)
-            }
+            // 复用前先卸载旧位置的 watcher,避免回调到错误位置。
+            holder.watcher?.let { holder.input.removeTextChangedListener(it) }
             holder.boundPosition = position
-            editors[position] = holder.input
             val label = request.labels[position]
-            val default = request.defaults.getOrNull(position).orEmpty()
             val type = request.types.getOrNull(position) ?: "text"
             holder.label.text = label
-            holder.input.setText(default)
+            holder.input.setText(values[position])
             holder.input.inputType = when (type) {
                 "number" -> InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
                 "decimal", "float", "double" ->
@@ -94,17 +98,25 @@ class ScriptPromptDialog(
             } else {
                 EditorInfo.IME_ACTION_NEXT
             }
+            val tw = object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: Editable?) {
+                    if (holder.boundPosition != RecyclerView.NO_POSITION) {
+                        values[holder.boundPosition] = s?.toString().orEmpty()
+                    }
+                }
+            }
+            holder.input.addTextChangedListener(tw)
+            holder.watcher = tw
         }
 
         override fun onViewRecycled(holder: ViewHolder) {
-            if (holder.boundPosition != RecyclerView.NO_POSITION) {
-                editors.remove(holder.boundPosition)
-                holder.boundPosition = RecyclerView.NO_POSITION
-            }
+            holder.watcher?.let { holder.input.removeTextChangedListener(it) }
+            holder.watcher = null
+            holder.boundPosition = RecyclerView.NO_POSITION
         }
 
-        fun getValues(): List<String> = (0 until request.labels.size).map { idx ->
-            editors[idx]?.text?.toString().orEmpty()
-        }
+        fun getValues(): List<String> = values.toList()
     }
 }
