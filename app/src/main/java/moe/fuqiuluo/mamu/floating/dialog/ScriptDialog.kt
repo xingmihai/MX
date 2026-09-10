@@ -238,6 +238,13 @@ class ScriptDialog(
         val latch = CountDownLatch(1)
         val result = AtomicReference<T?>()
         mainHandler.post {
+            // 会话已释放:不再显示新弹窗,立即返回 null 解除 worker 阻塞,
+            // 否则排队的 show 会在父弹窗关闭后创建孤立悬浮窗。
+            if (released) {
+                result.set(null)
+                latch.countDown()
+                return@post
+            }
             try {
                 show { value ->
                     result.set(value)
@@ -278,6 +285,11 @@ class ScriptDialog(
      * 各弹窗的 reported 守卫保证回调只会触发一次,故强制 dismiss 会安全返回 null。
      */
     private fun showInteractive(dialog: BaseDialog) {
+        // 会话已释放:不再显示新弹窗,直接 dismiss 该实例避免泄漏。
+        if (released) {
+            dialog.dismiss()
+            return
+        }
         activeInteractive = dialog
         dialog.onDismiss = {
             if (activeInteractive === dialog) activeInteractive = null
