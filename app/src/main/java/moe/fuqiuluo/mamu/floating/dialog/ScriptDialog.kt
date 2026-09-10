@@ -455,6 +455,16 @@ class ScriptDialog(
         super.dismiss()
     }
 
+    /**
+     * 重写 show():无论由用户打开悬浮窗还是脚本内部 gg.setVisible(true) 触发,
+     * 都同步 overlayVisible = true,避免"窗口已显示但 isVisible() 仍返回 false"
+     * 的状态不同步(例如脚本先 setVisible(false) 后被用户重新打开)。
+     */
+    override fun show() {
+        overlayVisible.set(true)
+        super.show()
+    }
+
     private class EntryAdapter(
         private val onClick: (ScriptFsEntry) -> Unit
     ) : RecyclerView.Adapter<EntryAdapter.ViewHolder>() {
