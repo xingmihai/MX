@@ -328,12 +328,8 @@ class GgApiBridge(
             if (size > MAX_COPY_BYTES) {
                 throw LuaError("gg.copyMemory: size too large")
             }
-            // 先整块读再整块写，是 memcpy 而非 memmove 语义。两段区间重叠时结果
-            // 取决于写入顺序，会静默写坏数据。这里至少让脚本作者看到警告。
-            val overlaps = dst > src && dst < src + size || src > dst && src < dst + size
-            if (overlaps) {
-                onWarn("gg.copyMemory: 源区间与目标区间重叠，结果可能不正确")
-            }
+            // 先把整块源数据读到内存再整段写入，等价于 memmove：即使两段区间重叠，
+            // 写入的也是原始源字节，结果确定且正确，因此不需要对重叠发出警告。
             val data = readMemory(src, size) ?: return FALSE
             return LuaValue.valueOf(writeMemory(dst, data))
         }
@@ -513,9 +509,35 @@ class GgApiBridge(
         return when {
             value.isnumber() -> {
                 val d = value.todouble()
-                if (d % 1.0 == 0.0) d.toLong().toString() else d.toString()
+                // 不能直接用 toLong()：超出 Long 区间的整数会被饱和成 Long.MAX_VALUE，
+                // 于是 1e19 会被推断成 Qword 但实际写进去的是 9223372036854775807。
+                // 无法表示为 64 位整数时退回原始 double 字面量，让 AUTO 推断成 Double。
+                integerStringOrNull(d) ?: d.toString()
             }
             else -> runCatching { value.tojstring() }.getOrDefault("")
+        }
+    }
+
+    /**
+     * 把 Lua number 转成整数字符串，供后续按目标宽度解析。
+     *
+     * Kotlin 的 Double.toLong() / toULong() 在越界时是饱和而不是报错，
+     * 直接调用会把越界值静默变成 Long.MAX_VALUE / ULong 边界值写进内存。
+     * 这里先做区间判断：
+     *   - [-2^63, 2^63)  → 按有符号输出
+     *   - [2^63, 2^64)   → 按无符号输出（Qword 的合法上半区）
+     *   - 其余           → 返回 null，由调用方决定报错还是改用其它类型
+     *
+     * 带小数部分的值仍按截断输出，交给 parseExprToBytes 做宽度校验。
+     */
+    private fun integerStringOrNull(d: Double): String? {
+        if (!d.isFinite()) return null
+        if (d % 1.0 != 0.0) return d.toLong().toString()
+        return when {
+            d < -POW_2_63 -> null
+            d < POW_2_63 -> d.toLong().toString()
+            d < POW_2_64 -> d.toULong().toString()
+            else -> null
         }
     }
 
@@ -540,7 +562,14 @@ class GgApiBridge(
                 if (displayType == DisplayValueType.QWORD && abs(d) >= MAX_SAFE_INTEGER) {
                     onWarn("gg: Qword 值超过 2^53，Lua number 无法精确表示，请改用字符串传值")
                 }
-                d.toLong().toString()
+                val asInteger = integerStringOrNull(d)
+                if (asInteger == null) {
+                    // 越界时不能沿用 toLong() 的饱和结果，否则会把
+                    // Long.MAX_VALUE 当成请求值写进内存。
+                    onWarn("gg: 数值超出 64 位整数范围，无法写入")
+                    return null
+                }
+                asInteger
             }
             // 原先的 checkjstring() 会抛 LuaError，和本类其它地方"转换失败返回 null
             // → 记为失败并跳过"的容错风格不一致：坏一行会中断整个脚本。
@@ -558,6 +587,9 @@ class GgApiBridge(
         private const val MAX_GET_RESULTS = 100_000
         // 2^53：double 能精确表示的最大整数。
         private const val MAX_SAFE_INTEGER = 9007199254740992.0
+        // 64 位整数的有符号 / 无符号区间端点，用于避免 toLong()/toULong() 的饱和行为。
+        private const val POW_2_63 = 9223372036854775808.0
+        private const val POW_2_64 = 18446744073709551616.0
 
         fun clampResultLimit(requested: Int, total: Long): Int {
             if (requested <= 0 || total <= 0L) return 0
