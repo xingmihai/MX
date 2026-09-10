@@ -279,19 +279,20 @@ class ScriptDialog(
                 // 这种情况下旧会话的写入会覆盖新会话的状态,所以写入后必须再校验,
                 // 若 epoch 已变则撤销写入恢复默认值。
                 overlayVisible.set(v)
-                if (sessionEpoch.get() != epoch || released) {
+                val stale = sessionEpoch.get() != epoch || released
+                if (stale) {
                     overlayVisible.set(true)
-                    return@onSetVisible
-                }
-                mainHandler.post {
-                    // 队列中的操作到主线程时再次校验:
-                    // 1. epoch 仍匹配(防止 post 执行前又切换了会话)
-                    // 2. overlayVisible 未被新操作覆盖(例如用户通过 show() 重开)
-                    if (sessionEpoch.get() != epoch || released) return@post
-                    if (overlayVisible.get() != v) return@post
-                    // 注意:Android Dialog.hide() 不更新 isShowing,
-                    // 所以不能用 isShowing 判断是否需要 show/hide —— 直接调用,幂等。
-                    if (v) show() else dialog.hide()
+                } else {
+                    mainHandler.post {
+                        // 队列中的操作到主线程时再次校验:
+                        // 1. epoch 仍匹配(防止 post 执行前又切换了会话)
+                        // 2. overlayVisible 未被新操作覆盖(例如用户通过 show() 重开)
+                        if (sessionEpoch.get() != epoch || released) return@post
+                        if (overlayVisible.get() != v) return@post
+                        // 注意:Android Dialog.hide() 不更新 isShowing,
+                        // 所以不能用 isShowing 判断是否需要 show/hide —— 直接调用,幂等。
+                        if (v) show() else dialog.hide()
+                    }
                 }
             }
         )
