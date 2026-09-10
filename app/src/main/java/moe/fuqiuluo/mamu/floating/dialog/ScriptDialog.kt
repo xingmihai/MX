@@ -213,7 +213,9 @@ class ScriptDialog(
         // 同时确保 dialog 真的可见(上一会话可能 hide 了窗口),防止 isVisible=true 但
         // 窗口仍隐藏的状态不同步。
         overlayVisible.set(true)
-        mainHandler.post { if (!dialog.isShowing) show() }
+        // 注意:Android Dialog.hide() 不会改变 isShowing 状态,这里直接 show()
+        // 让被上一会话 hide 的窗口恢复显示,不能依赖 isShowing 判断。
+        mainHandler.post { show() }
         // 切换脚本前清空控制台并关闭上一会话遗留的交互弹窗(若 A 正在 alert/choice/
         // prompt 等待,启动 B 时应关闭它,否则 A 的弹窗会在 B 期间悬浮且不被跟踪)。
         dismissActiveInteractive()
@@ -283,11 +285,9 @@ class ScriptDialog(
                     // 2. overlayVisible 未被新操作覆盖(例如用户通过 show() 重开)
                     if (sessionEpoch.get() != epoch || released) return@post
                     if (overlayVisible.get() != v) return@post
-                    if (v) {
-                        if (!dialog.isShowing) show()
-                    } else {
-                        if (dialog.isShowing) dialog.hide()
-                    }
+                    // 注意:Android Dialog.hide() 不更新 isShowing,
+                    // 所以不能用 isShowing 判断是否需要 show/hide —— 直接调用,幂等。
+                    if (v) show() else dialog.hide()
                 }
             }
         )
