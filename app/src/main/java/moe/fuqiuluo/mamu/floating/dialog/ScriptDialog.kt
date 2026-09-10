@@ -61,6 +61,13 @@ class ScriptDialog(
     // 否则会复活一个孤立的悬浮窗(脚本会话已结束)。
     @Volatile
     private var released = false
+    // 标记脚本被用户停止(Stop)。与 [released] 不同:ScriptDialog 仍开着,最后的输出
+    // 仍应显示,但不应再显示新的交互弹窗(避免排队的 alert/choice/prompt 在停止后弹出)。
+    // 新会话开始时(runLocalFile/runUrl/executeSource)重置为 false。
+    @Volatile
+    private var stopped = false
+
+    private fun shouldBlockInteractive(): Boolean = released || stopped
 
     val isRunning: Boolean
         get() = host.isRunning
@@ -94,7 +101,12 @@ class ScriptDialog(
             ScriptPaths.parent(currentPath)?.let { openDirectory(it) }
         }
         binding.btnRunUrl.setOnClickListener { runUrl() }
-        binding.btnStop.setOnClickListener { host.stop() }
+        binding.btnStop.setOnClickListener {
+            // 标记停止:阻止排队中的交互弹窗在停止后弹出,并 dismiss 当前的。
+            stopped = true
+            mainHandler.post { dismissActiveInteractive() }
+            host.stop()
+        }
         binding.btnClose.setOnClickListener {
             onCancel?.invoke()
             dismiss()
@@ -124,9 +136,10 @@ class ScriptDialog(
     }
 
     private fun runLocalFile(path: String) {
-        // 新会话启动点:重置 released 标志,确保后续输出进入控制台。
-        // 此处运行在主线程,与 release() 的 released=true 互斥,不会出现重置先于关闭的竞态。
+        // 新会话启动点:重置 released/stopped 标志,确保后续输出进入控制台、交互弹窗正常显示。
+        // 此处运行在主线程,与 release()/Stop 的写入互斥,不会出现重置先于关闭的竞态。
         released = false
+        stopped = false
         coroutineScope.launch {
             val source = withContext(Dispatchers.IO) {
                 runCatching { ScriptLocalBrowser.read(path) }
@@ -147,8 +160,9 @@ class ScriptDialog(
             return
         }
         if (host.isRunning) return
-        // 新会话启动点:同 runLocalFile,先重置 released 再起协程。
+        // 新会话启动点:同 runLocalFile,先重置 released/stopped 再起协程。
         released = false
+        stopped = false
         coroutineScope.launch {
             appendOutput(context.getString(R.string.script_downloading))
             val source = withContext(Dispatchers.IO) {
@@ -167,8 +181,8 @@ class ScriptDialog(
             return
         }
         if (host.isRunning) return
-        // 协程恢复时若会话已关闭,直接放弃执行,避免启动孤立脚本与控制台。
-        if (released) return
+        // 协程恢复时若会话已关闭或脚本已停止,直接放弃执行,避免启动孤立脚本与控制台。
+        if (shouldBlockInteractive()) return
         // 切换脚本前清空控制台,新会话从空白开始。所有 console 访问统一在主线程。
         val previousConsole = console
         console = null
@@ -243,9 +257,9 @@ class ScriptDialog(
         val latch = CountDownLatch(1)
         val result = AtomicReference<T?>()
         mainHandler.post {
-            // 会话已释放:不再显示新弹窗,立即返回 null 解除 worker 阻塞,
-            // 否则排队的 show 会在父弹窗关闭后创建孤立悬浮窗。
-            if (released) {
+            // 会话已释放或脚本已停止:不再显示新弹窗,立即返回 null 解除 worker 阻塞,
+            // 否则排队的 show 会在脚本停止/父弹窗关闭后创建孤立悬浮窗。
+            if (shouldBlockInteractive()) {
                 result.set(null)
                 latch.countDown()
                 return@post
@@ -290,8 +304,8 @@ class ScriptDialog(
      * 各弹窗的 reported 守卫保证回调只会触发一次,故强制 dismiss 会安全返回 null。
      */
     private fun showInteractive(dialog: BaseDialog) {
-        // 会话已释放:不再显示新弹窗,直接 dismiss 该实例避免泄漏。
-        if (released) {
+        // 会话已释放或脚本已停止:不再显示新弹窗,直接 dismiss 该实例避免泄漏。
+        if (shouldBlockInteractive()) {
             dialog.dismiss()
             return
         }
