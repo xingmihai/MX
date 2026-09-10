@@ -393,20 +393,20 @@ class ScriptDialog(
 
     private fun appendOutput(line: String) {
         // 输出统一进入弹出式控制台,与官方 GG 行为一致。
-        mainHandler.post {
-            // release 后排队的输出直接丢弃,避免复活已关闭的控制台导致孤立悬浮窗。
-            if (released) return@post
-            val c = console ?: ScriptConsoleDialog(context).also { newConsole ->
-                // 用户点关闭按钮或返回键后,清掉缓存引用,使下次输出会重新弹出新窗口,
-                // 而不是继续往已 dismiss 的视图里追加(否则后续输出不可见)。
-                newConsole.onDismiss = {
-                    if (console === newConsole) console = null
-                }
-                newConsole.show()
-                console = newConsole
+        // 调用方(onOutput/onWarn/onFinished/executeSource)已在主线程并通过 epoch 检查,
+        // 此处不再 mainHandler.post,避免嵌套 post 绕过 epoch 守卫导致跨会话串扰。
+        // release 后的输出直接丢弃,避免复活已关闭的控制台导致孤立悬浮窗。
+        if (released) return
+        val c = console ?: ScriptConsoleDialog(context).also { newConsole ->
+            // 用户点关闭按钮或返回键后,清掉缓存引用,使下次输出会重新弹出新窗口,
+            // 而不是继续往已 dismiss 的视图里追加(否则后续输出不可见)。
+            newConsole.onDismiss = {
+                if (console === newConsole) console = null
             }
-            c.append(line)
+            newConsole.show()
+            console = newConsole
         }
+        c.append(line)
     }
 
     private fun updateRunningState(running: Boolean) {
