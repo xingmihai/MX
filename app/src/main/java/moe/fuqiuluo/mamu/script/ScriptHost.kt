@@ -58,13 +58,18 @@ class ScriptHost(
         onFinished: (ScriptEndReason) -> Unit,
         myCancelled: AtomicBoolean
     ) {
-        // 若上一 worker 仍未退出(在非可中断代码中卡死,超时未响应 interrupt+shouldStop),
-        // 不启动新 worker 避免并行修改共享状态,报告错误让用户稍后重试。
-        // 旧 worker 会因 shouldStop(timeoutMs) 最终退出,届时新会话可正常启动。
+        // 等待上一 worker 真正退出再启动新 worker,保证不并行。
+        // worker 内部受 shouldStop(myCancelled + timeoutMs) 约束,正常会在 timeoutMs
+        // 内退出(execute 已对旧 cancelled 置 true 并 interrupt);debug hook 每行检查
+        // shouldStop,纯 Lua 代码必退出。循环 join 直到退出,不丢弃新会话。
         val previous = worker
         if (previous != null && previous.isAlive) {
-            post { onFinished(ScriptEndReason.Error("上一脚本未响应中断,请稍后重试", null)) }
-            return
+            try {
+                previous.join() // 无超时:依赖 shouldStop 保证旧 worker 最终退出
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
         }
         worker = thread(name = "mamu-lua-host", isDaemon = true) {
             val start = System.currentTimeMillis()
@@ -104,11 +109,8 @@ class ScriptHost(
                 if (worker === Thread.currentThread()) worker = null
             }
         }
-        // 等待本 worker 真正退出再返回,使 executor 的下一个任务在本 worker 结束后才开始,
-        // 保证串行。带超时:worker 内部受 shouldStop(timeoutMs) 约束,正常会在 timeoutMs
-        // 内退出;若在非可中断代码中卡死,超时后放弃等待(已 interrupt 过,风险可控),
-        // 让新会话能执行而非永远排队。
-        try { worker?.join(timeoutMs + 2_000) } catch (_: InterruptedException) {}
+        // 不在此 join 本 worker:下一个 startWorker 开头会检查并 join 仍 alive 的
+        // worker,保证串行。executor 任务立即返回,不占用 executor 线程等待。
     }
 
     fun stop() {
