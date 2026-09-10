@@ -128,7 +128,7 @@ class InterruptDebugLib(
 
     override fun onInstruction(pc: Int, v: Varargs, top: Int) {
         instructionCount++
-        if (instructionCount % 256 == 0 && shouldStop()) {
+        if (instructionCount % 64 == 0 && shouldStop()) {
             throw LuaError("script interrupted")
         }
     }

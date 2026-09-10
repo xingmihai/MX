@@ -38,6 +38,7 @@ import moe.fuqiuluo.mamu.script.ScriptResultItem
 import moe.fuqiuluo.mamu.script.ScriptUrlFetcher
 import moe.fuqiuluo.mamu.widget.NotificationOverlay
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -58,6 +59,10 @@ class ScriptDialog(
     // 避免脚本已结束后交互弹窗仍悬浮或在新会话才弹出。
     @Volatile
     private var activeInteractive: BaseDialog? = null
+    // 悬浮窗可见性:gg.isVisible 查询、gg.setVisible 切换。
+    // 默认 true,让事件驱动脚本(while true + isVisible)首次就能进入 Main 流程,
+    // 不用等用户手动呼出悬浮窗。
+    private val overlayVisible = AtomicBoolean(true)
     // 标记 ScriptDialog 已 release。release 后排队的 appendOutput 不应再创建新控制台,
     // 否则会复活一个孤立的悬浮窗(脚本会话已结束)。
     @Volatile
@@ -259,7 +264,9 @@ class ScriptDialog(
             onMultiChoice = { request ->
                 runBlockingDialog(epoch) { showChoiceDialog(request, multiSelect = true, it) }
             },
-            onPrompt = { request -> runBlockingDialog(epoch) { showPromptDialog(request, it) } }
+            onPrompt = { request -> runBlockingDialog(epoch) { showPromptDialog(request, it) } },
+            onIsVisible = { overlayVisible.get() },
+            onSetVisible = { v -> overlayVisible.set(v) }
         )
         host.execute(
             source = source,
