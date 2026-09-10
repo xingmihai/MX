@@ -38,6 +38,7 @@ import moe.fuqiuluo.mamu.script.ScriptResultItem
 import moe.fuqiuluo.mamu.script.ScriptUrlFetcher
 import moe.fuqiuluo.mamu.widget.NotificationOverlay
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 class ScriptDialog(
@@ -66,6 +67,11 @@ class ScriptDialog(
     // 新会话开始时(runLocalFile/runUrl/executeSource)重置为 false。
     @Volatile
     private var stopped = false
+    // 会话代次(generation)。每次启动新会话自增,使被 Stop 的旧会话 IO 完成后
+    // 因 epoch 不匹配而放弃执行,避免"新会话重置 stopped=true 后旧会话复活"。
+    // 例如:脚本 A 加载中被 Stop(stopped=true),用户启动 B(stopped=false,epoch++),
+    // A 的 IO 完成后核对 epoch 已变化,直接 return,不会执行 A。
+    private val sessionEpoch = AtomicLong(0L)
 
     private fun shouldBlockInteractive(): Boolean = released || stopped
 
@@ -136,17 +142,23 @@ class ScriptDialog(
     }
 
     private fun runLocalFile(path: String) {
-        // 新会话启动点:重置 released/stopped 标志,确保后续输出进入控制台、交互弹窗正常显示。
-        // 此处运行在主线程,与 release()/Stop 的写入互斥,不会出现重置先于关闭的竞态。
+        // 新会话启动点:自增 epoch 并重置 released/stopped 标志,确保后续输出进入控制台、
+        // 交互弹窗正常显示。此处运行在主线程,与 release()/Stop 的写入互斥。
+        val epoch = sessionEpoch.incrementAndGet()
         released = false
         stopped = false
         coroutineScope.launch {
             val source = withContext(Dispatchers.IO) {
                 runCatching { ScriptLocalBrowser.read(path) }
             }.getOrElse { error ->
-                appendOutput(error.message ?: context.getString(R.string.script_read_failed))
+                // 仅当仍是当前会话时才报告错误,避免覆盖新会话输出。
+                if (sessionEpoch.get() == epoch && !released) {
+                    appendOutput(error.message ?: context.getString(R.string.script_read_failed))
+                }
                 return@launch
             }
+            // 核对 epoch:若期间用户 Stop 后启动了新会话(或释放),放弃执行本会话。
+            if (sessionEpoch.get() != epoch || shouldBlockInteractive()) return@launch
             appendOutput(context.getString(R.string.script_running_local, path))
             executeSource(source)
         }
@@ -160,7 +172,8 @@ class ScriptDialog(
             return
         }
         if (host.isRunning) return
-        // 新会话启动点:同 runLocalFile,先重置 released/stopped 再起协程。
+        // 新会话启动点:同 runLocalFile,自增 epoch 并重置 released/stopped 再起协程。
+        val epoch = sessionEpoch.incrementAndGet()
         released = false
         stopped = false
         coroutineScope.launch {
@@ -168,9 +181,12 @@ class ScriptDialog(
             val source = withContext(Dispatchers.IO) {
                 runCatching { ScriptUrlFetcher.fetch(url) }
             }.getOrElse { error ->
-                appendOutput(error.message ?: context.getString(R.string.script_download_failed))
+                if (sessionEpoch.get() == epoch && !released) {
+                    appendOutput(error.message ?: context.getString(R.string.script_download_failed))
+                }
                 return@launch
             }
+            if (sessionEpoch.get() != epoch || shouldBlockInteractive()) return@launch
             executeSource(source)
         }
     }
