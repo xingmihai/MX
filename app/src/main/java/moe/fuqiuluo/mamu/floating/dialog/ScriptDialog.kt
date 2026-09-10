@@ -495,12 +495,13 @@ class ScriptDialog(
         val total = SearchEngine.getTotalResultCount().coerceAtLeast(0L)
         if (total <= 0L) return 0
         var written = 0
-        var offset = 0
+        // offset 必须是 Long：total 来自 getTotalResultCount()，Int 与 Long
+        // 无法直接用 < 比较。传给 getResults 时再转回 Int。
+        var offset = 0L
         while (offset < total) {
             val count = minOf(EDIT_ALL_PAGE_SIZE.toLong(), total - offset).toInt()
-            val page = runCatching { SearchEngine.getResults(offset, count) }.getOrNull()
-                ?: break
-            if (page.isEmpty()) break
+            val page = runCatching { SearchEngine.getResults(offset.toInt(), count) }.getOrNull()
+            if (page == null || page.isEmpty()) break
             page.forEach { item ->
                 if (WuwaDriver.writeMemory(item.address, bytes)) written++
             }
