@@ -256,11 +256,16 @@ class GgApiBridge(
                 val freezeField = row.get("freeze")
                 if (!freezeField.isnil()) {
                     if (freezeField.toboolean()) {
-                        if (written) {
-                            onFreeze(addr, bytes, displayType.nativeId)
+                        // Only register the freeze after a successful write, and fold
+                        // the callback's result into the returned status so a failed
+                        // registration does not let gg.setValues report success.
+                        if (written && !onFreeze(addr, bytes, displayType.nativeId)) {
+                            ok = false
                         }
                     } else {
-                        onUnfreeze(addr)
+                        if (!onUnfreeze(addr)) {
+                            ok = false
+                        }
                     }
                 }
             }
@@ -288,6 +293,10 @@ class GgApiBridge(
 
     private inner class GetRangesList : OneArgFunction() {
         override fun call(filter: LuaValue): LuaValue {
+            if (!isProcessBound()) {
+                onWarn("未绑定进程，无法读写内存")
+                return FALSE
+            }
             val nameFilter = when {
                 filter.isnil() -> null
                 filter.isstring() -> filter.tojstring().takeIf { it.isNotBlank() && it != "nil" }
