@@ -11,7 +11,10 @@ class ScriptHost(
     @Volatile
     private var worker: Thread? = null
 
-    private val cancelled = AtomicBoolean(false)
+    // 当前会话的取消标志。execute() 启动新会话时创建独立实例,
+    // 避免旧 worker(被 interrupt 但未退出)与新 worker 共享导致状态串扰。
+    @Volatile
+    private var cancelled: AtomicBoolean = AtomicBoolean(false)
 
     val isRunning: Boolean
         get() = worker?.isAlive == true
@@ -26,12 +29,14 @@ class ScriptHost(
         // 若旧 worker 仍在 unwind(用户 Stop 后或新会话立即启动),interrupt 它并直接
         // 启动新 worker,避免 executeSource 因 isRunning=true 静默丢弃新会话。
         worker?.takeIf { it.isAlive }?.interrupt()
-        cancelled.set(false)
+        // 为新会话创建独立的取消标志,旧 worker 持有旧引用不受影响。
+        val myCancelled = AtomicBoolean(false)
+        cancelled = myCancelled
         worker = thread(name = "mamu-lua-host", isDaemon = true) {
             val start = System.currentTimeMillis()
             val reason = runCatching {
                 val shouldStop = {
-                    cancelled.get() || System.currentTimeMillis() - start >= timeoutMs
+                    myCancelled.get() || System.currentTimeMillis() - start >= timeoutMs
                 }
                 val debugLib = InterruptDebugLib(shouldStop)
                 val globals = SandboxGlobals.create(
@@ -42,16 +47,16 @@ class ScriptHost(
                 api.install(globals)
                 globals.load(source, "script").call()
                 when {
-                    cancelled.get() -> ScriptEndReason.Stopped
+                    myCancelled.get() -> ScriptEndReason.Stopped
                     System.currentTimeMillis() - start >= timeoutMs -> ScriptEndReason.Timeout
                     else -> ScriptEndReason.Completed
                 }
             }.getOrElse { error ->
                 when {
-                    cancelled.get() -> ScriptEndReason.Stopped
+                    myCancelled.get() -> ScriptEndReason.Stopped
                     System.currentTimeMillis() - start >= timeoutMs -> ScriptEndReason.Timeout
                     error is LuaError && error.message?.contains("script interrupted") == true -> {
-                        if (cancelled.get()) ScriptEndReason.Stopped else ScriptEndReason.Timeout
+                        if (myCancelled.get()) ScriptEndReason.Stopped else ScriptEndReason.Timeout
                     }
                     else -> {
                         val line = parseLine(error.message)
@@ -60,7 +65,10 @@ class ScriptHost(
                 }
             }
             post { onFinished(reason) }
-            worker = null
+            // 只有当前 worker 才能清空引用,避免旧 worker 退出时误清新 worker 的引用。
+            synchronized(this) {
+                if (worker === Thread.currentThread()) worker = null
+            }
         }
     }
 
