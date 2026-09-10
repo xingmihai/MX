@@ -58,18 +58,28 @@ class ScriptHost(
         onFinished: (ScriptEndReason) -> Unit,
         myCancelled: AtomicBoolean
     ) {
-        // 等待上一 worker 真正退出再启动新 worker,保证不并行。
-        // worker 内部受 shouldStop(myCancelled + timeoutMs) 约束,正常会在 timeoutMs
-        // 内退出(execute 已对旧 cancelled 置 true 并 interrupt);debug hook 每行检查
-        // shouldStop,纯 Lua 代码必退出。循环 join 直到退出,不丢弃新会话。
+        // 等待上一 worker 退出再启动新 worker,保证不并行。
+        // 正常情况下旧 worker 在 execute() 中已被置 shouldStop=true 并 interrupt:
+        // 纯 Lua 代码在 debug hook(每行检查 shouldStop)下立即退出;响应中断的阻塞
+        // 调用(sleep/wait/可中断 I/O)也会随即抛 InterruptedException 退出。
+        // 使用有界 join 而非无限 join,避免旧 worker 卡在中断不敏感且不检查
+        // shouldInterrupt 的死操作(native 死循环/死锁)时无限阻塞,导致替换脚本永不执行。
         val previous = worker
         if (previous != null && previous.isAlive) {
             try {
-                previous.join() // 无超时:依赖 shouldStop 保证旧 worker 最终退出
+                previous.join(timeoutMs + 2_000)
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
                 return
             }
+            // 超时仍未退出:旧 worker 为中断不敏感的死操作所卡(极罕见)。此时放行
+            // 新会话而非无限阻塞或丢弃用户请求,安全性由以下保证:
+            //  - 旧 worker 的 myCancelled 已为 true(execute 中设置),其一旦恢复执行,
+            //    debug hook 每行检查 shouldStop 与 api.shouldInterrupt 都会令其 abort,
+            //    不会与新 worker 并发修改共享搜索/内存/冻结状态;
+            //  - 旧 worker 退出时通过 `worker === Thread.currentThread()` 守卫不会误清
+            //    新 worker 引用,后续 stop() 也能正确指向新 worker。
+            // 不再 re-interrupt:execute 中已 interrupt 过,且对死操作无效。
         }
         worker = thread(name = "mamu-lua-host", isDaemon = true) {
             val start = System.currentTimeMillis()
