@@ -57,6 +57,10 @@ class ScriptDialog(
     // 避免脚本已结束后交互弹窗仍悬浮或在新会话才弹出。
     @Volatile
     private var activeInteractive: BaseDialog? = null
+    // 标记 ScriptDialog 已 release。release 后排队的 appendOutput 不应再创建新控制台,
+    // 否则会复活一个孤立的悬浮窗(脚本会话已结束)。
+    @Volatile
+    private var released = false
 
     val isRunning: Boolean
         get() = host.isRunning
@@ -158,6 +162,8 @@ class ScriptDialog(
             return
         }
         if (host.isRunning) return
+        // 新会话开始:重置 released 标志,确保本次脚本的输出能正常进入控制台。
+        released = false
         // 切换脚本前清空控制台,新会话从空白开始。所有 console 访问统一在主线程。
         val previousConsole = console
         console = null
@@ -311,6 +317,8 @@ class ScriptDialog(
     private fun appendOutput(line: String) {
         // 输出统一进入弹出式控制台,与官方 GG 行为一致。
         mainHandler.post {
+            // release 后排队的输出直接丢弃,避免复活已关闭的控制台导致孤立悬浮窗。
+            if (released) return@post
             val c = console ?: ScriptConsoleDialog(context).also { newConsole ->
                 // 用户点关闭按钮或返回键后,清掉缓存引用,使下次输出会重新弹出新窗口,
                 // 而不是继续往已 dismiss 的视图里追加(否则后续输出不可见)。
@@ -334,6 +342,8 @@ class ScriptDialog(
     }
 
     fun release() {
+        // 标记已释放:后续排队的 appendOutput 不再复活控制台。
+        released = true
         host.stop()
         // 关闭当前交互弹窗(若有),避免脚本停止后悬浮残留。
         mainHandler.post { dismissActiveInteractive() }
