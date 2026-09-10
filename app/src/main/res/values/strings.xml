@@ -369,4 +369,19 @@
     <string name="script_running_local">运行 %s</string>
     <string name="script_entry_dir">文件夹</string>
 
+    <!-- 脚本交互对话框 -->
+    <string name="script_alert_default_positive">确定</string>
+    <string name="script_alert_default_negative">取消</string>
+    <string name="script_alert_default_neutral">以后</string>
+    <string name="script_choice_default_message">请选择</string>
+    <string name="script_choice_button_ok">确定</string>
+    <string name="script_choice_button_cancel">取消</string>
+    <string name="script_prompt_button_ok">确定</string>
+    <string name="script_prompt_button_cancel">取消</string>
+    <string name="script_console_title">脚本输出</string>
+    <string name="script_console_clear">清空</string>
+    <string name="script_console_close">关闭</string>
+    <string name="script_console_empty">暂无输出</string>
+    <string name="script_console_copy">复制全部</string>
+
 </resources>

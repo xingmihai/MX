@@ -25,15 +25,20 @@ import moe.fuqiuluo.mamu.driver.SearchEngine
 import moe.fuqiuluo.mamu.driver.WuwaDriver
 import moe.fuqiuluo.mamu.script.GgApiBridge
 import moe.fuqiuluo.mamu.script.GgApiBridge.Companion.toScriptResultItem
+import moe.fuqiuluo.mamu.script.ScriptAlertRequest
+import moe.fuqiuluo.mamu.script.ScriptChoiceRequest
 import moe.fuqiuluo.mamu.script.ScriptEndReason
 import moe.fuqiuluo.mamu.script.ScriptFsEntry
 import moe.fuqiuluo.mamu.script.ScriptHost
 import moe.fuqiuluo.mamu.script.ScriptLocalBrowser
 import moe.fuqiuluo.mamu.script.ScriptMemoryRange
 import moe.fuqiuluo.mamu.script.ScriptPaths
+import moe.fuqiuluo.mamu.script.ScriptPromptRequest
 import moe.fuqiuluo.mamu.script.ScriptResultItem
 import moe.fuqiuluo.mamu.script.ScriptUrlFetcher
 import moe.fuqiuluo.mamu.widget.NotificationOverlay
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicReference
 
 class ScriptDialog(
     context: Context,
@@ -46,8 +51,8 @@ class ScriptDialog(
     private val host = ScriptHost(poster = { mainHandler.post(it) })
     private lateinit var binding: DialogScriptBinding
     private lateinit var adapter: EntryAdapter
-    private var outputCleared = false
     private var currentPath = ScriptPaths.DEFAULT_DIR
+    private var console: ScriptConsoleDialog? = null
 
     val isRunning: Boolean
         get() = host.isRunning
@@ -74,7 +79,7 @@ class ScriptDialog(
         binding.entryList.adapter = adapter
 
         if (!WuwaDriver.isProcessBound) {
-            appendOutput(context.getString(R.string.script_unbound))
+            notification.showWarning(context.getString(R.string.script_unbound))
         }
 
         binding.btnUp.setOnClickListener {
@@ -149,8 +154,10 @@ class ScriptDialog(
             return
         }
         if (host.isRunning) return
-        outputCleared = false
-        binding.outputText.text = ""
+        // 切换脚本前清空控制台,新会话从空白开始。所有 console 访问统一在主线程。
+        val previousConsole = console
+        console = null
+        previousConsole?.let { c -> mainHandler.post { c.dismiss() } }
         updateRunningState(true)
         val api = GgApiBridge(
             selectedResults = getSelectedResults(),
@@ -181,7 +188,15 @@ class ScriptDialog(
             onGetMemoryRanges = { filter -> listMemoryRanges(filter) },
             onCopyText = { text -> copyText(text) },
             onFreeze = { addr, bytes, typeId -> FreezeManager.addFrozen(addr, bytes, typeId) },
-            onUnfreeze = { addr -> FreezeManager.removeFrozen(addr) }
+            onUnfreeze = { addr -> FreezeManager.removeFrozen(addr) },
+            onAlert = { request -> runBlockingDialog { showAlertDialog(request, it) } },
+            onChoice = { request ->
+                runBlockingDialog { showChoiceDialog(request, multiSelect = false, it) }?.firstOrNull()
+            },
+            onMultiChoice = { request ->
+                runBlockingDialog { showChoiceDialog(request, multiSelect = true, it) }
+            },
+            onPrompt = { request -> runBlockingDialog { showPromptDialog(request, it) } }
         )
         host.execute(
             source = source,
@@ -200,6 +215,52 @@ class ScriptDialog(
                 updateRunningState(false)
             }
         )
+    }
+
+    /**
+     * 阻塞 Lua worker 线程直到主线程弹出 UI 并回调结果。
+     * [show] 在主线程执行,其回调参数完成时计数 down,返回回调传入的值。
+     * worker 在等待期间被中断时会抛 LuaError(由调用方处理 shouldInterrupt)。
+     */
+    private fun <T> runBlockingDialog(show: (onResult: (T?) -> Unit) -> Unit): T? {
+        val latch = CountDownLatch(1)
+        val result = AtomicReference<T?>()
+        mainHandler.post {
+            try {
+                show { value ->
+                    result.set(value)
+                    latch.countDown()
+                }
+            } catch (e: Throwable) {
+                result.set(null)
+                latch.countDown()
+            }
+        }
+        try {
+            latch.await()
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        return result.get()
+    }
+
+    private fun showAlertDialog(request: ScriptAlertRequest, onResult: (Int?) -> Unit) {
+        val dialog = ScriptAlertDialog(context, request, onResult)
+        dialog.show()
+    }
+
+    private fun showChoiceDialog(
+        request: ScriptChoiceRequest,
+        multiSelect: Boolean,
+        onResult: (List<Int>?) -> Unit
+    ) {
+        val dialog = ScriptChoiceDialog(context, request, multiSelect, onResult)
+        dialog.show()
+    }
+
+    private fun showPromptDialog(request: ScriptPromptRequest, onResult: (List<String>?) -> Unit) {
+        val dialog = ScriptPromptDialog(context, request, onResult)
+        dialog.show()
     }
 
     private fun copyText(text: String) {
@@ -226,17 +287,14 @@ class ScriptDialog(
     }
 
     private fun appendOutput(line: String) {
-        if (!::binding.isInitialized) return
-        val current = binding.outputText.text?.toString().orEmpty()
-        val next = if (!outputCleared && current == context.getString(R.string.script_output_hint)) {
-            line
-        } else if (current.isEmpty()) {
-            line
-        } else {
-            current + "\n" + line
+        // 输出统一进入弹出式控制台,与官方 GG 行为一致。
+        mainHandler.post {
+            val c = console ?: ScriptConsoleDialog(context).also { newConsole ->
+                newConsole.show()
+                console = newConsole
+            }
+            c.append(line)
         }
-        outputCleared = true
-        binding.outputText.text = next
     }
 
     private fun updateRunningState(running: Boolean) {
@@ -250,6 +308,8 @@ class ScriptDialog(
 
     fun release() {
         host.stop()
+        console?.let { c -> mainHandler.post { c.dismiss() } }
+        console = null
     }
 
     override fun dismiss() {
