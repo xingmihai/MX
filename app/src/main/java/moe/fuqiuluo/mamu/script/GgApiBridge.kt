@@ -84,6 +84,8 @@ class GgApiBridge(
         gg.set("choice", ChoiceFn())
         gg.set("multiChoice", MultiChoiceFn())
         gg.set("prompt", PromptFn())
+        gg.set("isVisible", IsVisibleFn())
+        gg.set("setVisible", SetVisibleFn())
         globals.set("gg", gg)
     }
 
@@ -525,5 +527,17 @@ class GgApiBridge(
             }
             return table
         }
+    }
+
+    private inner class IsVisibleFn : OneArgFunction() {
+        // GameGuardian 里 overlay visibility 由 setVisible 控制,
+        // 这里暂返回 false(悬浮窗可见性由宿主统一管理,脚本层不做切换)。
+        override fun call(arg: LuaValue): LuaValue = FALSE
+    }
+
+    private inner class SetVisibleFn : OneArgFunction() {
+        // GameGuardian 里 overlay visibility 由 setVisible 控制,
+        // 这里空实现(悬浮窗可见性由宿主统一管理)。
+        override fun call(arg: LuaValue): LuaValue = NONE
     }
 }
