@@ -3,10 +3,48 @@ package moe.fuqiuluo.mamu.utils
 import moe.fuqiuluo.mamu.floating.data.model.DisplayValueType
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Locale
 import kotlin.text.HexFormat
 
 object ValueTypeUtils {
     private val hexFormat = HexFormat { upperCase = true }
+    /**
+     * 推断 gg.TYPE_AUTO 写入时应使用的具体类型。
+     *
+     * AUTO 不携带宽度信息，只有拿到具体的值才能判断。规则与 GameGuardian 一致：
+     * 整数按数值范围落进 Dword / Qword，小数按是否落在 float 范围内落进 Float / Double。
+     *
+     * @param raw 待写入值的字符串形式
+     * @return 推断出的具体类型（永不为 AUTO）
+     */
+    fun inferAutoType(raw: String): DisplayValueType {
+        val text = raw.trim()
+        val isHex = text.startsWith("0x", ignoreCase = true) ||
+            text.startsWith("-0x", ignoreCase = true)
+        // 注意先判十六进制：0xE 这类字面量含 'e'，不能当成科学计数法。
+        val looksFloat = !isHex &&
+            (text.contains('.') || text.contains('e', ignoreCase = true))
+
+        if (looksFloat) {
+            val value = text.toDoubleOrNull()
+            val fitsFloat = value != null &&
+                !value.isNaN() &&
+                value.isFinite() &&
+                value >= -Float.MAX_VALUE.toDouble() &&
+                value <= Float.MAX_VALUE.toDouble()
+            return if (fitsFloat) DisplayValueType.FLOAT else DisplayValueType.DOUBLE
+        }
+
+        val asLong = text.toLongOrNull()
+            ?: text.toULongOrNull()?.toLong()
+            ?: return DisplayValueType.DWORD
+        return if (asLong in Int.MIN_VALUE.toLong()..0xFFFFFFFFL) {
+            DisplayValueType.DWORD
+        } else {
+            DisplayValueType.QWORD
+        }
+    }
+
     /**
      * Parse expression string to byte array based on value type
      * @param expr Input expression string
@@ -188,13 +226,18 @@ object ValueTypeUtils {
 
             DisplayValueType.FLOAT -> {
                 if (bytes.size >= 4) {
-                    "%.6g".format(buffer.float)
+                    // 9 位有效数字是 float 无损往返所需的最小值。
+                    // 用 6 位会把 3.1415927f 显示成 "3.14159"，脚本 getValues -> setValues
+                    // 回写后变成另一个值。格式化固定 Locale.US，避免某些语言环境下
+                    // 小数点被输出成逗号。
+                    "%.9g".format(Locale.US, buffer.float)
                 } else ""
             }
 
             DisplayValueType.DOUBLE -> {
                 if (bytes.size >= 8) {
-                    "%.10g".format(buffer.double)
+                    // 17 位是 double 无损往返所需的最小值。
+                    "%.17g".format(Locale.US, buffer.double)
                 } else ""
             }
 

@@ -15,6 +15,7 @@ import org.luaj.vm2.lib.ThreeArgFunction
 import org.luaj.vm2.lib.TwoArgFunction
 import org.luaj.vm2.lib.VarArgFunction
 import org.luaj.vm2.lib.ZeroArgFunction
+import kotlin.math.abs
 
 class GgApiBridge(
     private val selectedResults: List<ScriptResultItem>,
@@ -48,9 +49,11 @@ class GgApiBridge(
         gg.set("TYPE_BYTE", ScriptTypeFlags.BYTE)
         gg.set("TYPE_WORD", ScriptTypeFlags.WORD)
         gg.set("TYPE_DWORD", ScriptTypeFlags.DWORD)
+        gg.set("TYPE_XOR", ScriptTypeFlags.XOR)
         gg.set("TYPE_FLOAT", ScriptTypeFlags.FLOAT)
         gg.set("TYPE_QWORD", ScriptTypeFlags.QWORD)
         gg.set("TYPE_DOUBLE", ScriptTypeFlags.DOUBLE)
+        gg.set("TYPE_AUTO", ScriptTypeFlags.AUTO)
         gg.set("REGION_JAVA_HEAP", 1)
         gg.set("REGION_C_HEAP", 2)
         gg.set("REGION_C_ALLOC", 4)
@@ -117,7 +120,7 @@ class GgApiBridge(
             }
             val addr = parseAddress(address) ?: return NIL
             val flags = type.checkint()
-            val displayType = ScriptTypeFlags.toDisplayType(flags)
+            val displayType = resolveReadType(flags)
                 ?: throw LuaError("unsupported type flag: $flags")
             val size = displayType.memorySize.toInt()
             if (size <= 0) return NIL
@@ -134,8 +137,9 @@ class GgApiBridge(
             }
             val addr = parseAddress(address) ?: return FALSE
             val flags = type.checkint()
-            val displayType = ScriptTypeFlags.toDisplayType(flags)
+            val baseType = ScriptTypeFlags.toDisplayType(flags)
                 ?: throw LuaError("unsupported type flag: $flags")
+            val displayType = resolveWriteType(baseType, value)
             val bytes = encodeValue(value, displayType) ?: return FALSE
             return LuaValue.valueOf(writeMemory(addr, bytes))
         }
@@ -220,8 +224,11 @@ class GgApiBridge(
                 throw LuaError("gg.getValues: expected table")
             }
             if (!isProcessBound()) {
+                // 返回空表而不是原表：原表里是上一次的陈旧 value，脚本拿到后会
+                // 当作本次刷新的结果继续用，属于静默错误。空表会让后续遍历直接
+                // 不执行，问题更早暴露。
                 onWarn("未绑定进程，无法读写内存")
-                return items
+                return LuaTable()
             }
             val table = items.checktable()
             for (i in 1..table.length()) {
@@ -230,7 +237,7 @@ class GgApiBridge(
                 if (!row.istable()) continue
                 val addr = parseAddress(row.get("address")) ?: continue
                 val flags = row.get("flags").optint(ScriptTypeFlags.DWORD)
-                val displayType = ScriptTypeFlags.toDisplayType(flags)
+                val displayType = resolveReadType(flags)
                     ?: throw LuaError("unsupported type flag: $flags")
                 val size = displayType.memorySize.toInt()
                 if (size <= 0) continue
@@ -265,8 +272,9 @@ class GgApiBridge(
                     continue
                 }
                 val flags = row.get("flags").optint(ScriptTypeFlags.DWORD)
-                val displayType = ScriptTypeFlags.toDisplayType(flags)
+                val baseType = ScriptTypeFlags.toDisplayType(flags)
                     ?: throw LuaError("unsupported type flag: $flags")
+                val displayType = resolveWriteType(baseType, row.get("value"))
                 val bytes = encodeValue(row.get("value"), displayType)
                 if (bytes == null) {
                     ok = false
@@ -320,6 +328,12 @@ class GgApiBridge(
             if (size > MAX_COPY_BYTES) {
                 throw LuaError("gg.copyMemory: size too large")
             }
+            // 先整块读再整块写，是 memcpy 而非 memmove 语义。两段区间重叠时结果
+            // 取决于写入顺序，会静默写坏数据。这里至少让脚本作者看到警告。
+            val overlaps = dst > src && dst < src + size || src > dst && src < dst + size
+            if (overlaps) {
+                onWarn("gg.copyMemory: 源区间与目标区间重叠，结果可能不正确")
+            }
             val data = readMemory(src, size) ?: return FALSE
             return LuaValue.valueOf(writeMemory(dst, data))
         }
@@ -328,8 +342,9 @@ class GgApiBridge(
     private inner class GetRangesList : OneArgFunction() {
         override fun call(filter: LuaValue): LuaValue {
             if (!isProcessBound()) {
+                // 返回空表：false 会让 ipairs() 直接抛 "bad argument: table expected"。
                 onWarn("未绑定进程，无法读写内存")
-                return FALSE
+                return LuaTable()
             }
             val nameFilter = when {
                 filter.isnil() -> null
@@ -342,6 +357,9 @@ class GgApiBridge(
                 row.set("start", ScriptAddress.toHex(range.start))
                 row.set("end", ScriptAddress.toHex(range.end))
                 row.set("name", range.name)
+                // GG 脚本按 v.type 过滤内存段（如 'rw-'），此前缺这个字段会让过滤
+                // 条件恒为 nil。权限串同时保留在 state 上，兼容两种写法。
+                row.set("type", range.state)
                 row.set("state", range.state)
                 table.set(index + 1, row)
             }
@@ -366,9 +384,9 @@ class GgApiBridge(
             table.set("code", result.code)
             table.set("url", result.url)
             table.set("content", result.content)
-            if (result.error == null) {
-                table.set("error", FALSE)
-            } else {
+            // 成功时 error 必须是 nil 而不是 false：GG 脚本用 if r.error then 判定失败，
+            // false 虽为假值，但 r.error ~= nil 这类判断会误判成出错。
+            if (result.error != null) {
                 table.set("error", result.error)
             }
             return table
@@ -472,6 +490,35 @@ class GgApiBridge(
         }
     }
 
+    /**
+     * 读取内存时的类型解析。AUTO 不含宽度信息，按 Dword 兜底并给出提示。
+     */
+    private fun resolveReadType(flags: Int): DisplayValueType? {
+        val type = ScriptTypeFlags.toReadDisplayType(flags) ?: return null
+        if (type != ScriptTypeFlags.toDisplayType(flags)) {
+            onWarn("gg: TYPE_AUTO 无法确定读取宽度，本次按 Dword 处理")
+        }
+        return type
+    }
+
+    /**
+     * 写入内存时的类型解析。AUTO 会按待写入的值推断出具体类型。
+     */
+    private fun resolveWriteType(baseType: DisplayValueType, value: LuaValue): DisplayValueType {
+        if (baseType != DisplayValueType.AUTO) return baseType
+        return ValueTypeUtils.inferAutoType(rawForInference(value))
+    }
+
+    private fun rawForInference(value: LuaValue): String {
+        return when {
+            value.isnumber() -> {
+                val d = value.todouble()
+                if (d % 1.0 == 0.0) d.toLong().toString() else d.toString()
+            }
+            else -> runCatching { value.tojstring() }.getOrDefault("")
+        }
+    }
+
     private fun parseAddress(value: LuaValue): Long? {
         return when {
             value.isstring() -> ScriptAddress.parse(value.tojstring())
@@ -486,8 +533,18 @@ class GgApiBridge(
             value.isnumber() && (displayType == DisplayValueType.FLOAT ||
                 displayType == DisplayValueType.DOUBLE) ->
                 value.todouble().toString()
-            value.isnumber() -> value.todouble().toLong().toString()
-            else -> value.checkjstring()
+            value.isnumber() -> {
+                val d = value.todouble()
+                // Lua number 是 double，只有 53 位有效位。超过 2^53 的 Qword 传数字会
+                // 静默丢精度（写进去的是另一个数），必须提示改用字符串传值。
+                if (displayType == DisplayValueType.QWORD && abs(d) >= MAX_SAFE_INTEGER) {
+                    onWarn("gg: Qword 值超过 2^53，Lua number 无法精确表示，请改用字符串传值")
+                }
+                d.toLong().toString()
+            }
+            // 原先的 checkjstring() 会抛 LuaError，和本类其它地方"转换失败返回 null
+            // → 记为失败并跳过"的容错风格不一致：坏一行会中断整个脚本。
+            else -> runCatching { value.tojstring() }.getOrNull() ?: return null
         }
         return try {
             ValueTypeUtils.parseExprToBytes(raw, displayType)
@@ -499,6 +556,8 @@ class GgApiBridge(
     companion object {
         private const val MAX_COPY_BYTES = 1024 * 1024
         private const val MAX_GET_RESULTS = 100_000
+        // 2^53：double 能精确表示的最大整数。
+        private const val MAX_SAFE_INTEGER = 9007199254740992.0
 
         fun clampResultLimit(requested: Int, total: Long): Int {
             if (requested <= 0 || total <= 0L) return 0
