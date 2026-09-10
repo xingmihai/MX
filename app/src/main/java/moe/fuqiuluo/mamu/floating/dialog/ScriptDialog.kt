@@ -208,6 +208,9 @@ class ScriptDialog(
         // 旧 worker 并启动新会话,确保用户启动 B 时 B 优先执行而非被静默忽略。
         // 协程恢复时若会话已关闭或脚本已停止,直接放弃执行,避免启动孤立脚本与控制台。
         if (shouldBlockInteractive()) return
+        // 切换脚本前重置悬浮窗可见性,避免上一会话 setVisible(false) 泄漏到新会话,
+        // 导致事件驱动脚本(while true + isVisible)首次查询就拿到 false 而跳过 Main。
+        overlayVisible.set(true)
         // 切换脚本前清空控制台并关闭上一会话遗留的交互弹窗(若 A 正在 alert/choice/
         // prompt 等待,启动 B 时应关闭它,否则 A 的弹窗会在 B 期间悬浮且不被跟踪)。
         dismissActiveInteractive()
@@ -266,7 +269,19 @@ class ScriptDialog(
             },
             onPrompt = { request -> runBlockingDialog(epoch) { showPromptDialog(request, it) } },
             onIsVisible = { overlayVisible.get() },
-            onSetVisible = { v -> overlayVisible.set(v) }
+            onSetVisible = { v ->
+                overlayVisible.set(v)
+                // 在主线程真正隐藏/显示 dialog,使 overlayVisible 与实际窗口可见性一致。
+                // 使用 dialog.hide() 而非 dismiss():dismiss 会触发 release() 停止脚本,
+                // hide 仅隐藏窗口但保持 Dialog 实例存活,脚本可继续运行且用户可 setVisible(true) 恢复显示。
+                mainHandler.post {
+                    if (v) {
+                        if (!dialog.isShowing) show()
+                    } else {
+                        if (dialog.isShowing) dialog.hide()
+                    }
+                }
+            }
         )
         host.execute(
             source = source,
