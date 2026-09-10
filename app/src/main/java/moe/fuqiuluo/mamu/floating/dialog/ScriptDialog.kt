@@ -203,6 +203,9 @@ class ScriptDialog(
         // 旧 worker 并启动新会话,确保用户启动 B 时 B 优先执行而非被静默忽略。
         // 协程恢复时若会话已关闭或脚本已停止,直接放弃执行,避免启动孤立脚本与控制台。
         if (shouldBlockInteractive()) return
+        // 切换脚本前清空控制台并关闭上一会话遗留的交互弹窗(若 A 正在 alert/choice/
+        // prompt 等待,启动 B 时应关闭它,否则 A 的弹窗会在 B 期间悬浮且不被跟踪)。
+        dismissActiveInteractive()
         // 切换脚本前清空控制台,新会话从空白开始。所有 console 访问统一在主线程。
         val previousConsole = console
         console = null

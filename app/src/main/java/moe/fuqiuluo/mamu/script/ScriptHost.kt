@@ -58,6 +58,14 @@ class ScriptHost(
         onFinished: (ScriptEndReason) -> Unit,
         myCancelled: AtomicBoolean
     ) {
+        // 若上一 worker 仍未退出(在非可中断代码中卡死,超时未响应 interrupt+shouldStop),
+        // 不启动新 worker 避免并行修改共享状态,报告错误让用户稍后重试。
+        // 旧 worker 会因 shouldStop(timeoutMs) 最终退出,届时新会话可正常启动。
+        val previous = worker
+        if (previous != null && previous.isAlive) {
+            post { onFinished(ScriptEndReason.Error("上一脚本未响应中断,请稍后重试", null)) }
+            return
+        }
         worker = thread(name = "mamu-lua-host", isDaemon = true) {
             val start = System.currentTimeMillis()
             val reason = runCatching {
