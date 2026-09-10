@@ -1,0 +1,29 @@
+# CodeRabbit 配置
+language: zh-CN
+
+reviews:
+  profile: chill          # 只报高置信度问题，大幅降噪
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false             # 关掉每次 PR 附赠的小诗
+  review_status: true
+  collapse_walkthrough: false
+
+  auto_review:
+    enabled: true
+    drafts: false         # 草稿 PR 不审
+    base_branches:
+      - master            # ← 关键：显式指定
+
+  path_filters:
+    - "!**/build/**"
+    - "!**/.gradle/**"
+    - "!**/*.apk"
+
+  path_instructions:
+    - path: "**/*.kt"
+      instructions: >
+        用中文回复。不要评论代码格式和命名风格。
+
+chat:
+  auto_reply: true
