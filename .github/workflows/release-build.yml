@@ -84,19 +84,6 @@ jobs:
           RELEASE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew assembleRelease --stacktrace
 
-      - name: Dump build log to temp branch (TEMP DEBUG)
-        if: failure()
-        run: |
-          ./gradlew assembleRelease --stacktrace > /tmp/build.log 2>&1 || true
-          grep -E "^e: |^w: .*error|What went wrong|FAILURE:|error:" /tmp/build.log | head -60 > build-log.txt || true
-          tail -60 /tmp/build.log >> build-log.txt || true
-          git config user.email "ci@local"
-          git config user.name "ci"
-          git checkout -B ci-log-tmp
-          git add -f build-log.txt
-          git commit -m "ci build log" || exit 0
-          git push -f origin ci-log-tmp || exit 0
-
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:

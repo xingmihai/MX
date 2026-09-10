@@ -46,6 +46,10 @@ import moe.fuqiuluo.mamu.floating.data.model.DisplayValueType
 import moe.fuqiuluo.mamu.floating.data.model.MemoryRange
 import moe.fuqiuluo.mamu.script.ScriptRegions
 import moe.fuqiuluo.mamu.script.ScriptSearchStatus
+import moe.fuqiuluo.mamu.driver.ExactSearchResultItem
+import moe.fuqiuluo.mamu.driver.FuzzySearchResultItem
+import moe.fuqiuluo.mamu.driver.PointerChainResultItem
+import moe.fuqiuluo.mamu.driver.SearchResultItem
 
 class ScriptDialog(
     context: Context,
@@ -503,11 +507,28 @@ class ScriptDialog(
             val page = runCatching { SearchEngine.getResults(offset.toInt(), count) }.getOrNull()
             if (page == null || page.isEmpty()) break
             page.forEach { item ->
-                if (WuwaDriver.writeMemory(item.address, bytes)) written++
+                val address = addressOf(item)
+                // address 为 0 表示无法从该结果类型取出地址，跳过而不是写入空指针页
+                if (address != 0L && WuwaDriver.writeMemory(address, bytes)) written++
             }
             offset += count
         }
         return written
+    }
+
+    /**
+     * 取出结果项的地址。
+     *
+     * SearchResultItem 是接口，只声明了 nativePosition 与 displayValueType；
+     * address 字段在具体子类上，所以必须按类型分派，
+     * 直接写 item.address 会编译不过（Unresolved reference）。
+     * 分支与 GgApiBridge.toScriptResultItem() 保持一致。
+     */
+    private fun addressOf(item: SearchResultItem): Long = when (item) {
+        is ExactSearchResultItem -> item.address
+        is FuzzySearchResultItem -> item.address
+        is PointerChainResultItem -> item.address
+        else -> 0L
     }
 
     private fun applyScriptRanges(flags: Int): Boolean {
