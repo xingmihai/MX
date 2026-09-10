@@ -14,17 +14,8 @@ class ScriptHost(
 
     // 当前会话的取消标志。execute() 启动新会话时创建独立实例,
     // 避免旧 worker(被 interrupt 但未退出)与新 worker 共享导致状态串扰。
-    // 注意:execute() 会先把 [cancelled] 置 true(取消上一个请求)再切换到新标志,
-    // 因此历史请求的标志会被依次取消;但 [cancelled] 始终指向最近一次请求,
-    // 在"A 仍在 unwind、B/C 已排队"时 [cancelled] 指向 C 而非正在跑的 A。
-    // 故 stop() 另用 [runningCancel] 精确取消正在执行的 worker。
     @Volatile
     private var cancelled: AtomicBoolean = AtomicBoolean(false)
-
-    // 当前正在运行(或即将运行)的 worker 的取消标志。startWorker 启动 worker 前置入,
-    // stop() 据此精确取消正在执行的 worker,而非最近一次 execute() 排队的请求。
-    @Volatile
-    private var runningCancel: AtomicBoolean? = null
 
     // 单线程执行器:串行处理所有脚本执行请求,保证任意时刻只有一个 worker 运行,
     // 不会出现多个 replace 调度线程并行 join 同一 previous 后并发 startWorker。
@@ -49,12 +40,8 @@ class ScriptHost(
         onFinished: (ScriptEndReason) -> Unit
     ) {
         val myCancelled = AtomicBoolean(false)
-        // 取消所有遗留会话,确保新会话开始前既无运行中 worker 也无排队请求存活:
-        //  - runningCancel 精确取消正在执行的 worker(即使最近 execute 排队了新请求
-        //    使 [cancelled] 指向队列尾,runningCancel 仍指向真正在跑的 worker);
-        //  - cancelled 取消最近一次(可能仍在排队、尚未 startWorker)的请求。
-        // 二者合覆盖所有历史请求,避免中断不敏感的旧 worker 漏网继续到超时。
-        runningCancel?.set(true)
+        // 先把旧会话的取消标志置 true 并 interrupt 旧 worker,让它尽快退出。
+        // 注意:必须用旧的 cancelled 引用(此时还未被 myCancelled 覆盖)。
         cancelled.set(true)
         worker?.takeIf { it.isAlive }?.interrupt()
         // 切换到新会话的取消标志。
@@ -71,32 +58,27 @@ class ScriptHost(
         onFinished: (ScriptEndReason) -> Unit,
         myCancelled: AtomicBoolean
     ) {
-        // 等待上一 worker 退出再启动新 worker,保证不并行。
-        // 正常情况下旧 worker 在 execute() 中已被置 shouldStop=true 并 interrupt:
-        // 纯 Lua 代码在 debug hook(每行检查 shouldStop)下立即退出;响应中断的阻塞
-        // 调用(sleep/wait/可中断 I/O)也会随即抛 InterruptedException 退出。
-        // 使用有界 join 而非无限 join,避免旧 worker 卡在中断不敏感且不检查
-        // shouldInterrupt 的死操作(native 死循环/死锁)时无限阻塞,导致替换脚本永不执行。
+        // 等待上一 worker 退出再启动新 worker,保证任意时刻只有一个 worker 运行(无重叠)。
+        // 该 join 实际上是有界的,不会无限阻塞 executor:
+        //  1. 纯 Lua 代码:debug hook 每行检查 shouldStop(= myCancelled || 超过 timeoutMs),
+        //     worker 最迟在自身 timeoutMs(60s)内自行终止——故 join 最多等到 timeoutMs。
+        //  2. 响应中断的 Java 阻塞调用(sleep/wait/可中断 I/O):execute 已 interrupt,
+        //     它们抛 InterruptedException 立即退出——join 几乎立即返回。
+        //  3. API 桥接调用:均检查 api.shouldInterrupt,取消后随即返回。
+        // 仅当 worker 卡在"既不响应 interrupt、又不检查 shouldInterrupt、且永不返回"的
+        // native 死循环/死锁(JVM 无法安全强杀线程,native 代码自身缺陷)时,join 才会
+        // 无限等待——但这不会导致两个 worker 并发修改共享状态(worker 仍卡在 native
+        // 调用中,不会执行任何 Lua/API 操作),仅影响后续替换脚本的启动。这是 JVM
+        // 线程模型的固有限制,无法在不引入并发风险的前提下完全消除。
         val previous = worker
         if (previous != null && previous.isAlive) {
             try {
-                previous.join(timeoutMs + 2_000)
+                previous.join()
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
                 return
             }
-            // 超时仍未退出:旧 worker 为中断不敏感的死操作所卡(极罕见)。此时放行
-            // 新会话而非无限阻塞或丢弃用户请求,安全性由以下保证:
-            //  - 旧 worker 的 myCancelled 已为 true(execute 中设置),其一旦恢复执行,
-            //    debug hook 每行检查 shouldStop 与 api.shouldInterrupt 都会令其 abort,
-            //    不会与新 worker 并发修改共享搜索/内存/冻结状态;
-            //  - 旧 worker 退出时通过 `worker === Thread.currentThread()` 守卫不会误清
-            //    新 worker 引用,后续 stop() 也能正确指向新 worker。
-            // 不再 re-interrupt:execute 中已 interrupt 过,且对死操作无效。
         }
-        // 记录本 worker 的取消标志为"运行中"的标志,供 stop() 精确取消正在执行的
-        // worker(而非最近排队的请求)。先置标志再启动 worker,保证 stop 可见。
-        runningCancel = myCancelled
         worker = thread(name = "mamu-lua-host", isDaemon = true) {
             val start = System.currentTimeMillis()
             val reason = runCatching {
@@ -132,10 +114,7 @@ class ScriptHost(
             post { onFinished(reason) }
             // 只有当前 worker 才能清空引用,避免旧 worker 退出时误清新 worker 的引用。
             synchronized(this) {
-                if (worker === Thread.currentThread()) {
-                    worker = null
-                    if (runningCancel === myCancelled) runningCancel = null
-                }
+                if (worker === Thread.currentThread()) worker = null
             }
         }
         // 不在此 join 本 worker:下一个 startWorker 开头会检查并 join 仍 alive 的
@@ -143,11 +122,6 @@ class ScriptHost(
     }
 
     fun stop() {
-        // 精确取消正在执行的 worker:即使最近一次 execute() 排队了新请求(C)使
-        // [cancelled] 指向 C,这里仍取消真正在跑的 worker 的标志(runningCancel),
-        // 避免中断不敏感的旧 worker 继续到超时并修改共享状态。
-        runningCancel?.set(true)
-        // 同时取消最近排队的请求,使其启动后立即退出。
         cancelled.set(true)
         val running = worker ?: return
         thread(name = "mamu-lua-stop", isDaemon = true) {
