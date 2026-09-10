@@ -58,3 +58,21 @@
 # MMKV / LuaJ：内部依赖自身类名与反射保持稳定
 -keep class com.tencent.mmkv.** { *; }
 -keep class org.luaj.vm2.** { *; }
+
+# ============================================================
+# LuaJ 可选模块：缺失依赖导致 R8 full mode 中止编译
+# ============================================================
+# luaj-jse 3.0.1 打包了两个在 Android 上根本不存在的可选模块：
+#   1) org.luaj.vm2.script.*  —— JSR 223 脚本引擎，继承 javax.script.AbstractScriptEngine
+#   2) org.luaj.vm2.luajc.*   —— Lua 转 Java 字节码编译器，依赖 Apache BCEL (org.apache.bcel.*)
+# 由于上面 -keep class org.luaj.vm2.** 把这些类也保留了下来，R8 在 full mode 下
+# 会解析它们的父类 / 引用类型，发现 javax.script.AbstractScriptEngine 与
+# org.apache.bcel.* 全部缺失，进而报错并中止 minifyReleaseWithR8。
+#
+# 本项目只用 LuaJ 的解释器核心（Globals / LuaValue / LuaTable / OneArgFunction 等，
+# 见 script/GgApiBridge.kt），不会加载 script 与 luajc 模块，
+# 因此让 R8 忽略这些缺失类即可，不影响运行时行为。
+-dontwarn javax.script.**
+-dontwarn org.apache.bcel.**
+-dontwarn org.luaj.vm2.script.**
+-dontwarn org.luaj.vm2.luajc.**
