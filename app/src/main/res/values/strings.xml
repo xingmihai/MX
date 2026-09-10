@@ -359,6 +359,7 @@
     <string name="script_completed">执行完成</string>
     <string name="script_stopped">已停止</string>
     <string name="script_timeout">执行超时</string>
+    <string name="script_stuck">上一脚本卡死,已切换到新会话</string>
     <string name="script_engine_unavailable">脚本引擎不可用</string>
     <string name="script_warn_unbound_rw">未绑定进程，无法读写内存</string>
     <string name="script_no_local">当前目录没有文件夹或 .lua 文件</string>

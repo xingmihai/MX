@@ -49,7 +49,9 @@ class ScriptDialog(
     private val onClearSearchResults: () -> Unit
 ) : BaseDialog(context) {
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val host = ScriptHost(poster = { mainHandler.post(it) })
+    // var:当旧 host 的 worker 卡死(有界 join 超时)时,创建新 host 实例启动后续脚本,
+    // 旧 host 连同卡死 worker 被孤立(GC),新 host 内部状态与旧 host 完全隔离。
+    private var host = ScriptHost(poster = { mainHandler.post(it) })
     private lateinit var binding: DialogScriptBinding
     private lateinit var adapter: EntryAdapter
     private var currentPath = ScriptPaths.DEFAULT_DIR
@@ -198,6 +200,15 @@ class ScriptDialog(
         if (source.isBlank()) {
             appendOutput(context.getString(R.string.script_empty))
             return
+        }
+        // 旧 host 的 worker 卡死(native 死循环/死锁,有界 join 超时)时,旧 host 已无法
+        // 启动新会话(executor 会被卡死 worker 阻塞)。此时创建全新 ScriptHost 实例:
+        // 新 host 拥有独立的 executor/worker/cancelled 状态,与旧 host 完全隔离,可立即
+        // 启动新会话;旧 host 连同卡死 worker 被孤立,卡死 worker 持有旧 api 且
+        // shouldInterrupt=true,一旦从 native 返回即 abort,不修改共享状态。
+        if (host.hasStuckWorker) {
+            host = ScriptHost(poster = { mainHandler.post(it) })
+            appendOutput(context.getString(R.string.script_stuck))
         }
         // 不再因 host.isRunning 静默丢弃:ScriptHost.execute 会 interrupt 仍在 unwind 的
         // 旧 worker 并启动新会话,确保用户启动 B 时 B 优先执行而非被静默忽略。

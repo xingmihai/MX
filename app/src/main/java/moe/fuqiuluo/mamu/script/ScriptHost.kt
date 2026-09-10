@@ -17,6 +17,13 @@ class ScriptHost(
     @Volatile
     private var cancelled: AtomicBoolean = AtomicBoolean(false)
 
+    // 标记本 host 存在无法终止的"卡死" worker:join 超时后置 true,
+    // 由 ScriptDialog 检测并创建全新 ScriptHost 实例启动后续脚本,
+    // 避免无限阻塞 executor 使替换脚本永不执行。卡死 worker 持有旧 api,
+    // 其 shouldInterrupt 已为 true,一旦从 native 调用返回即 abort。
+    @Volatile
+    private var stuck = false
+
     // 单线程执行器:串行处理所有脚本执行请求,保证任意时刻只有一个 worker 运行,
     // 不会出现多个 replace 调度线程并行 join 同一 previous 后并发 startWorker。
     private val executor = Executors.newSingleThreadExecutor { r ->
@@ -25,6 +32,10 @@ class ScriptHost(
 
     val isRunning: Boolean
         get() = worker?.isAlive == true
+
+    /** 本 host 是否存在无法终止的卡死 worker,调用方据此决定是否换新实例。 */
+    val hasStuckWorker: Boolean
+        get() = stuck
 
     /**
      * 提交一个脚本执行请求到串行执行器。由于 executor 是单线程,多个 execute
@@ -59,23 +70,28 @@ class ScriptHost(
         myCancelled: AtomicBoolean
     ) {
         // 等待上一 worker 退出再启动新 worker,保证任意时刻只有一个 worker 运行(无重叠)。
-        // 该 join 实际上是有界的,不会无限阻塞 executor:
-        //  1. 纯 Lua 代码:debug hook 每行检查 shouldStop(= myCancelled || 超过 timeoutMs),
-        //     worker 最迟在自身 timeoutMs(60s)内自行终止——故 join 最多等到 timeoutMs。
-        //  2. 响应中断的 Java 阻塞调用(sleep/wait/可中断 I/O):execute 已 interrupt,
-        //     它们抛 InterruptedException 立即退出——join 几乎立即返回。
-        //  3. API 桥接调用:均检查 api.shouldInterrupt,取消后随即返回。
-        // 仅当 worker 卡在"既不响应 interrupt、又不检查 shouldInterrupt、且永不返回"的
-        // native 死循环/死锁(JVM 无法安全强杀线程,native 代码自身缺陷)时,join 才会
-        // 无限等待——但这不会导致两个 worker 并发修改共享状态(worker 仍卡在 native
-        // 调用中,不会执行任何 Lua/API 操作),仅影响后续替换脚本的启动。这是 JVM
-        // 线程模型的固有限制,无法在不引入并发风险的前提下完全消除。
+        // 正常情况下旧 worker 几乎立即退出(execute 已置 cancelled=true 并 interrupt):
+        //  1. 纯 Lua 代码:debug hook 每行检查 shouldStop,立即终止。
+        //  2. 响应中断的 Java 阻塞调用(sleep/wait/可中断 I/O):抛 InterruptedException 退出。
+        //  3. API 桥接调用:检查 api.shouldInterrupt,取消后随即返回。
+        // 采用有界 join 防止 worker 卡在"既不响应 interrupt、又不检查 shouldInterrupt、
+        // 且永不返回"的 native 死循环(JVM 无法安全强杀线程)时无限阻塞 executor。
+        // 超时后不直接放行新 worker(那会引入同 host 内两 worker 并发风险),而是标记
+        // stuck 让 ScriptDialog 层创建全新 ScriptHost 实例启动后续脚本——新 host 与
+        // 旧 host 的内部状态(worker/cancelled/executor)完全隔离,无串扰;卡死 worker
+        // 持有旧 api,shouldInterrupt 已为 true,一旦从 native 返回即 abort,不修改共享状态。
         val previous = worker
         if (previous != null && previous.isAlive) {
             try {
-                previous.join()
+                previous.join(timeoutMs + 2_000)
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
+                return
+            }
+            if (previous.isAlive) {
+                // 旧 worker 在 timeoutMs+2s 后仍未退出:判定为卡死(native 死循环/死锁)。
+                // 标记本 host stuck,放弃追踪该 worker,由调用方换新 host。
+                stuck = true
                 return
             }
         }
