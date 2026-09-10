@@ -49,8 +49,12 @@ class ScriptHost(
         onFinished: (ScriptEndReason) -> Unit
     ) {
         val myCancelled = AtomicBoolean(false)
-        // 先把旧会话的取消标志置 true 并 interrupt 旧 worker,让它尽快退出。
-        // 注意:必须用旧的 cancelled 引用(此时还未被 myCancelled 覆盖)。
+        // 取消所有遗留会话,确保新会话开始前既无运行中 worker 也无排队请求存活:
+        //  - runningCancel 精确取消正在执行的 worker(即使最近 execute 排队了新请求
+        //    使 [cancelled] 指向队列尾,runningCancel 仍指向真正在跑的 worker);
+        //  - cancelled 取消最近一次(可能仍在排队、尚未 startWorker)的请求。
+        // 二者合覆盖所有历史请求,避免中断不敏感的旧 worker 漏网继续到超时。
+        runningCancel?.set(true)
         cancelled.set(true)
         worker?.takeIf { it.isAlive }?.interrupt()
         // 切换到新会话的取消标志。
