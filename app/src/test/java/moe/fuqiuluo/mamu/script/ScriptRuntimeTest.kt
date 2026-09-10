@@ -199,6 +199,37 @@ class ScriptRuntimeTest : FunSpec({
         frozen shouldBe listOf(0x2000L)
     }
 
+    test("gg.setValues 写入失败且 freeze=true 时移除既有冻结") {
+        val frozen = mutableListOf<Long>()
+        val unfrozen = mutableListOf<Long>()
+        val api = fakeApi(
+            bound = true,
+            writeMemory = { _, _ -> false },
+            onFreeze = { addr, _, _ ->
+                frozen.add(addr)
+                true
+            },
+            onUnfreeze = { addr ->
+                unfrozen.add(addr)
+                true
+            }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val items = LuaValue.tableOf()
+        val row = LuaValue.tableOf()
+        row.set("address", LuaValue.valueOf("0x4000"))
+        row.set("flags", globals.get("gg").get("TYPE_DWORD"))
+        row.set("value", LuaValue.valueOf(7))
+        row.set("freeze", LuaValue.TRUE)
+        items.set(1, row)
+        globals.get("gg").get("setValues").call(items).toboolean() shouldBe false
+        // Write failed: must not register a new freeze, and must remove any
+        // existing (stale) freeze so the worker stops writing the old value.
+        frozen shouldBe emptyList()
+        unfrozen shouldBe listOf(0x4000L)
+    }
+
     test("gg.setValues 非表行标记失败且不阻断兄弟写入") {
         val written = mutableListOf<Long>()
         val api = fakeApi(

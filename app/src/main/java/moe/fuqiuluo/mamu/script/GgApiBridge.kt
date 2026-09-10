@@ -263,11 +263,22 @@ class GgApiBridge(
                 val freezeField = row.get("freeze")
                 if (!freezeField.isnil()) {
                     if (freezeField.toboolean()) {
-                        // Only register the freeze after a successful write, and fold
-                        // the callback's result into the returned status so a failed
-                        // registration does not let gg.setValues report success.
-                        if (written && !onFreeze(addr, bytes, displayType.nativeId)) {
-                            ok = false
+                        if (written) {
+                            // Only register the freeze after a successful write, and fold
+                            // the callback's result into the returned status so a failed
+                            // registration does not let gg.setValues report success.
+                            if (!onFreeze(addr, bytes, displayType.nativeId)) {
+                                ok = false
+                            }
+                        } else {
+                            // Write failed for a freeze=true request on an address that
+                            // may already be frozen with a previous (now stale) value.
+                            // Remove the existing entry so the freeze worker stops
+                            // hammering the old value even though this batch reports
+                            // failure. Fold the result into ok for consistent reporting.
+                            if (!onUnfreeze(addr)) {
+                                ok = false
+                            }
                         }
                     } else {
                         if (!onUnfreeze(addr)) {
