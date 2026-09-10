@@ -539,10 +539,13 @@ class GgApiBridge(
         if (baseType != DisplayValueType.AUTO) return baseType
         // 数字必须走 Double 重载：先转字符串会把 5.7 截断成 "5"，
         // 导致 AUTO 推断成 Dword 并按整数写入，丢掉小数部分。
-        if (value.isnumber()) return ValueTypeUtils.inferAutoType(value.todouble())
-        return ValueTypeUtils.inferAutoType(
-            runCatching { value.tojstring() }.getOrDefault("")
-        )
+        // 同样按 type() 分派，避免数字字符串被当成数字取 todouble()。
+        return when (value.type()) {
+            LuaValue.TNUMBER -> ValueTypeUtils.inferAutoType(value.todouble())
+            else -> ValueTypeUtils.inferAutoType(
+                runCatching { value.tojstring() }.getOrDefault("")
+            )
+        }
     }
 
     /**
@@ -568,10 +571,16 @@ class GgApiBridge(
         }
     }
 
+    /**
+     * 解析地址。必须用 [LuaValue.type] 而不是 isstring()/isnumber() 分派：
+     * LuaJ 里 LuaNumber.isstring() 恒为 true、LuaString.isnumber() 对数字字符串
+     * 也为 true，两者都会命中错误的分支。数字若走 tojstring()，
+     * LuaDouble 会先降为 float 再输出，高精度地址会被悄悄改掉。
+     */
     private fun parseAddress(value: LuaValue): Long? {
-        return when {
-            value.isstring() -> ScriptAddress.parse(value.tojstring())
-            value.isnumber() -> ScriptAddress.parseNumber(value.todouble())
+        return when (value.type()) {
+            LuaValue.TNUMBER -> ScriptAddress.parseNumber(value.todouble())
+            LuaValue.TSTRING -> ScriptAddress.parse(value.tojstring())
             else -> null
         }
     }
@@ -579,10 +588,14 @@ class GgApiBridge(
     private fun encodeValue(value: LuaValue, displayType: DisplayValueType): ByteArray? {
         val raw = when {
             value.isnil() -> return null
-            value.isnumber() && (displayType == DisplayValueType.FLOAT ||
+            // 一律用 type() 判定：LuaJ 的 LuaString.isnumber() 对 "123" 这类
+            // 数字字符串也返回 true，若走数字分支会先 todouble() 再转回来，
+            // Qword 大数（如 "18446744073709551615"）会被压成
+            // 1.8446744073709552E19 而写错值。字符串保持原样交给宽度校验。
+            value.type() == LuaValue.TNUMBER && (displayType == DisplayValueType.FLOAT ||
                 displayType == DisplayValueType.DOUBLE) ->
                 value.todouble().toString()
-            value.isnumber() -> {
+            value.type() == LuaValue.TNUMBER -> {
                 val d = value.todouble()
                 // Lua number 是 double，只有 53 位有效位。超过 2^53 的 Qword 传数字会
                 // 静默丢精度（写进去的是另一个数），必须提示改用字符串传值。
@@ -796,17 +809,24 @@ class GgApiBridge(
     /**
      * 取得搜索值的字符串形式。
      *
-     * 必须先看 Lua 的真实类型再看是否能当数字用：LuaJ 的 isnumber() 对
-     * "123" 这类数字字符串同样返回 true，若先走数字分支，
-     * gg.searchNumber("9007199254740993", gg.TYPE_QWORD) 会经 double
-     * 变成 9007199254740992 —— 脚本想搜的精确大数被静默改掉了。
-     * 因此字符串一律原样保留，只有真正的 Lua number 才做数值转换。
+     * 关键：不能用 isnumber()/isstring() 判定，LuaJ 这两个方法是双向松散的——
+     *  - LuaString.isnumber() 对 "123" 这类数字字符串返回 true
+     *  - LuaNumber.isstring() 恒返回 true
+     * 因此只能用 [LuaValue.type] 区分真实类型：
+     *  - 字符串原样透传，否则 gg.searchNumber("9007199254740993", TYPE_QWORD)
+     *    会经 double 变成 9007199254740992；
+     *  - 数字走 [numberToQueryString]，否则 LuaDouble.tojstring() 会把
+     *    非整数先降为 float 再输出，只剩 7 位有效数字。
      */
     private fun queryOf(value: LuaValue): String {
-        return when {
-            value.isnil() -> throw LuaError("gg: 搜索值为空")
-            value.isstring() -> value.tojstring()
-            value.isnumber() -> numberToQueryString(value.todouble())
+        return when (value.type()) {
+            LuaValue.TNIL -> throw LuaError("gg: 搜索值为空")
+            // 字符串原样透传，绝不走 double。
+            LuaValue.TSTRING -> value.tojstring()
+            // 数字不能用 tojstring()：LuaJ 的 LuaDouble.tojstring() 对非整数
+            // 是 Float.toString((float)v)，精度只剩 7 位有效数字，
+            // 0.1234567890123 会被搜成 0.12345679。
+            LuaValue.TNUMBER -> numberToQueryString(value.todouble())
             else -> value.tojstring()
         }
     }

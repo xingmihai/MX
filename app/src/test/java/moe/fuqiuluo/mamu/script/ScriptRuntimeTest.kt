@@ -769,6 +769,48 @@ class ScriptRuntimeTest : FunSpec({
         writes shouldBe 3
     }
 
+    test("gg.searchNumber 对 Lua 数字保持双精度") {
+        var captured: String? = null
+        val api = fakeApi(
+            bound = true,
+            onStartSearch = { query, _ ->
+                captured = query
+                true
+            },
+            onSearchStatus = { ScriptSearchStatus(true, 0L, null) }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        globals.get("gg").get("searchNumber").call(
+            LuaValue.valueOf(0.1234567890123),
+            globals.get("gg").get("TYPE_DOUBLE")
+        )
+        // 若走 LuaDouble.tojstring() 会得到 Float 精度的 "0.12345679"
+        captured shouldBe "0.1234567890123"
+    }
+
+    test("gg.setValues 保留数字字符串的 Qword 精度") {
+        var written: ByteArray? = null
+        val api = fakeApi(
+            bound = true,
+            writeMemory = { _, data ->
+                written = data
+                true
+            }
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val items = LuaValue.tableOf()
+        val row = LuaValue.tableOf()
+        row.set("address", LuaValue.valueOf("0x1000"))
+        row.set("flags", globals.get("gg").get("TYPE_QWORD"))
+        row.set("value", LuaValue.valueOf("18446744073709551615"))
+        items.set(1, row)
+        globals.get("gg").get("setValues").call(items).toboolean() shouldBe true
+        // 经 double 中转会得到 Long 饱和值，正确结果应全为 0xFF
+        written.toList() shouldBe List(8) { 0xFF.toByte() }
+    }
+
     test("区域掩码与 code 集合互为逆运算") {
         val flags = ScriptRegions.C_HEAP or ScriptRegions.ANONYMOUS or ScriptRegions.CODE_APP
         val codes = ScriptRegions.toRangeCodes(flags)
