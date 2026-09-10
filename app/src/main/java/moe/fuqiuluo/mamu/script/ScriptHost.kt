@@ -100,6 +100,7 @@ class ScriptHost(
                 }
             }.getOrElse { error ->
                 when {
+                    error is ScriptExit -> ScriptEndReason.Completed
                     myCancelled.get() -> ScriptEndReason.Stopped
                     System.currentTimeMillis() - start >= timeoutMs -> ScriptEndReason.Timeout
                     error is LuaError && error.message?.contains("script interrupted") == true -> {
