@@ -240,13 +240,16 @@ class GgApiBridge(
                     ok = false
                     continue
                 }
-                if (!writeMemory(addr, bytes)) {
+                val written = writeMemory(addr, bytes)
+                if (!written) {
                     ok = false
                 }
                 val freezeField = row.get("freeze")
                 if (!freezeField.isnil()) {
                     if (freezeField.toboolean()) {
-                        onFreeze(addr, bytes, displayType.nativeId)
+                        if (written) {
+                            onFreeze(addr, bytes, displayType.nativeId)
+                        }
                     } else {
                         onUnfreeze(addr)
                     }
