@@ -41,6 +41,11 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import moe.fuqiuluo.mamu.data.settings.selectedMemoryRanges
+import moe.fuqiuluo.mamu.floating.data.model.DisplayValueType
+import moe.fuqiuluo.mamu.floating.data.model.MemoryRange
+import moe.fuqiuluo.mamu.script.ScriptRegions
+import moe.fuqiuluo.mamu.script.ScriptSearchStatus
 
 class ScriptDialog(
     context: Context,
@@ -80,6 +85,13 @@ class ScriptDialog(
     // 例如:脚本 A 加载中被 Stop(stopped=true),用户启动 B(stopped=false,epoch++),
     // A 的 IO 完成后核对 epoch 已变化,直接 return,不会执行 A。
     private val sessionEpoch = AtomicLong(0L)
+    // gg.setRanges 使用的内存区域集合，初始沿用用户在悬浮窗里的选择。
+    // 独立于 MMKV，避免脚本改动污染 UI 设置。
+    private val scriptRanges: MutableSet<MemoryRange> =
+        MMKV.defaultMMKV().selectedMemoryRanges.toMutableSet()
+    // gg.getRanges 需要回显 GG 位掩码，记录最近一次设置的值。
+    @Volatile
+    private var scriptRegionFlags: Int = 0
 
     private fun shouldBlockInteractive(): Boolean = released || stopped
 
@@ -273,6 +285,12 @@ class ScriptDialog(
             },
             onPrompt = { request -> runBlockingDialog(epoch) { showPromptDialog(request, it) } },
             onIsVisible = { overlayVisible.get() },
+            onStartSearch = { query, type -> startScriptSearch(query, type) },
+            onStartRefine = { query, type -> startScriptRefine(query, type) },
+            onSearchStatus = { scriptSearchStatus() },
+            onCancelSearch = { runCatching { SearchEngine.requestCancel() } },
+            onSetRanges = { flags -> applyScriptRanges(flags) },
+            onGetRanges = { scriptRegionFlags },
             onSetVisible = { v ->
                 // 先写后校验(乐观模式):先写 overlayVisible,然后再检查 epoch/released。
                 // 旧会话 worker 可能在检查与写入之间被抢占,而新会话 incrementAndGet 已执行。
@@ -409,6 +427,63 @@ class ScriptDialog(
                 ?: return@post
             clipboard.setPrimaryClip(ClipData.newPlainText("mamu-script", text))
         }
+    }
+
+    /**
+     * 启动脚本发起的异步搜索。使用 [scriptRanges] 作为内存区域。
+     */
+    private fun startScriptSearch(query: String, type: DisplayValueType): Boolean {
+        if (!WuwaDriver.isProcessBound) return false
+        if (SearchEngine.isSearching()) return false
+        return runCatching {
+            SearchEngine.startSearchAsync(
+                query = query,
+                type = type,
+                ranges = scriptRanges.toSet(),
+                useDeepSearch = false
+            )
+        }.getOrDefault(false)
+    }
+
+    /**
+     * 在上次结果基础上细化搜索。
+     */
+    private fun startScriptRefine(query: String, type: DisplayValueType): Boolean {
+        if (!WuwaDriver.isProcessBound) return false
+        if (SearchEngine.isSearching()) return false
+        return runCatching {
+            SearchEngine.startRefineAsync(query = query, type = type)
+        }.getOrDefault(false)
+    }
+
+    /**
+     * 把搜索引擎的共享缓冲区状态翻译成桥接层可理解的结果。
+     */
+    private fun scriptSearchStatus(): ScriptSearchStatus {
+        return when (SearchEngine.getStatus()) {
+            SearchEngine.Status.COMPLETED ->
+                ScriptSearchStatus(true, SearchEngine.getTotalResultCount(), null)
+
+            SearchEngine.Status.CANCELLED ->
+                ScriptSearchStatus(true, 0L, "搜索已取消")
+
+            SearchEngine.Status.ERROR ->
+                ScriptSearchStatus(true, 0L, "搜索失败，错误码 ${SearchEngine.getErrorCode()}")
+
+            else ->
+                ScriptSearchStatus(false, SearchEngine.getFoundCount().coerceAtLeast(0L), null)
+        }
+    }
+
+    private fun applyScriptRanges(flags: Int): Boolean {
+        val ranges = ScriptRegions.toRangeCodes(flags)
+            .mapNotNull { MemoryRange.fromCode(it) }
+            .toSet()
+        if (ranges.isEmpty()) return false
+        scriptRanges.clear()
+        scriptRanges.addAll(ranges)
+        scriptRegionFlags = flags
+        return true
     }
 
     private fun listMemoryRanges(filter: String?): List<ScriptMemoryRange> {

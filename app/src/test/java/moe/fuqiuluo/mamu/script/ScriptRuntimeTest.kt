@@ -672,10 +672,88 @@ class ScriptRuntimeTest : FunSpec({
         ScriptUrlFetcher.validate("https://example.com/a.lua") shouldBe null
         ScriptUrlFetcher.validate("http://example.com/a.lua") shouldBe null
     }
+
+    test("REGION 常量与 GameGuardian 官方值一致") {
+        ScriptRegions.C_HEAP shouldBe 1
+        ScriptRegions.JAVA_HEAP shouldBe 2
+        ScriptRegions.C_ALLOC shouldBe 4
+        ScriptRegions.C_DATA shouldBe 8
+        ScriptRegions.C_BSS shouldBe 16
+        ScriptRegions.ANONYMOUS shouldBe 32
+        ScriptRegions.STACK shouldBe 64
+        ScriptRegions.CODE_APP shouldBe 16384
+        ScriptRegions.CODE_SYS shouldBe 32768
+        ScriptRegions.BAD shouldBe 131072
+        ScriptRegions.JAVA shouldBe 65536
+        ScriptRegions.PPSSPP shouldBe 262144
+        ScriptRegions.ASHMEM shouldBe 524288
+        ScriptRegions.VIDEO shouldBe 1048576
+        ScriptRegions.OTHER shouldBe -2080896
+    }
+
+    test("REGION 位掩码翻译为区域代码") {
+        ScriptRegions.toRangeCodes(ScriptRegions.C_HEAP or ScriptRegions.ANONYMOUS) shouldBe
+            setOf("Ch", "An")
+        ScriptRegions.toRangeCodes(0).isEmpty() shouldBe true
+    }
+
+    test("gg.getResults 的 value 是 number") {
+        val items = listOf(
+            ScriptResultItem(address = 0x1000L, value = "42", flags = ScriptTypeFlags.DWORD),
+            ScriptResultItem(address = 0x2000L, value = "1.5", flags = ScriptTypeFlags.FLOAT)
+        )
+        val api = fakeApi(results = items)
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val table = globals.get("gg").get("getResults").call(LuaValue.valueOf(10))
+        table.get(1).get("value").isnumber() shouldBe true
+        table.get(1).get("value").todouble() shouldBe 42.0
+        table.get(2).get("value").todouble() shouldBe 1.5
+    }
+
+    test("Qword 超过 2^53 时 value 保留字符串") {
+        val huge = "18446744073709551615"
+        val api = fakeApi(
+            results = listOf(
+                ScriptResultItem(0x1000L, huge, ScriptTypeFlags.QWORD)
+            )
+        )
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val table = globals.get("gg").get("getResults").call(LuaValue.valueOf(1))
+        table.get(1).get("value").isstring() shouldBe true
+        table.get(1).get("value").tojstring() shouldBe huge
+    }
+
+    test("gg.getTargetInfo 提供 packageName") {
+        val api = fakeApi(bound = true)
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        val info = globals.get("gg").get("getTargetInfo").call()
+        info.get("packageName").tojstring() shouldBe "demo"
+        info.get("processName").tojstring() shouldBe "demo"
+        globals.get("gg").get("getTargetPackage").call().tojstring() shouldBe "demo"
+    }
+
+    test("gg.getTargetPackage 去掉子进程后缀") {
+        val api = fakeApi(bound = true, processName = "com.example.game:service")
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        globals.get("gg").get("getTargetPackage").call().tojstring() shouldBe "com.example.game"
+    }
+
+    test("gg.setRanges 拒绝无法识别的 flags") {
+        val api = fakeApi()
+        val globals = SandboxGlobals.create(onPrint = {})
+        api.install(globals)
+        // 默认注入的 onSetRanges 返回 false，模拟没有任何已知位被置上
+        globals.get("gg").get("setRanges").call(LuaValue.valueOf(0)).toboolean() shouldBe false
+    }
 })
 
 private fun fakeApi(
     bound: Boolean = true,
+    processName: String = "demo",
     results: List<ScriptResultItem> = emptyList(),
     selected: List<ScriptResultItem> = emptyList(),
     onToast: (String) -> Unit = {},
@@ -699,7 +777,7 @@ private fun fakeApi(
         getResults = { maxCount -> results.take(maxCount) },
         isProcessBound = { bound },
         currentPid = { 123 },
-        processName = { "demo" },
+        processName = { processName },
         readMemory = readMemory,
         writeMemory = writeMemory,
         onGetResultsCount = onGetResultsCount,
