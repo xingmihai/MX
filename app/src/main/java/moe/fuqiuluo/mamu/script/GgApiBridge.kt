@@ -36,7 +36,10 @@ class GgApiBridge(
     private val onAlert: (ScriptAlertRequest) -> Int? = { null },
     private val onChoice: (ScriptChoiceRequest) -> Int? = { null },
     private val onMultiChoice: (ScriptChoiceRequest) -> List<Int>? = { null },
-    private val onPrompt: (ScriptPromptRequest) -> List<String>? = { null }
+    private val onPrompt: (ScriptPromptRequest) -> List<String>? = { null },
+    // 悬浮窗可见性:get 返回当前可见,set 切换可见状态。
+    private val onIsVisible: () -> Boolean = { true },
+    private val onSetVisible: (Boolean) -> Unit = {}
 ) {
     var shouldInterrupt: () -> Boolean = { false }
 
@@ -530,14 +533,15 @@ class GgApiBridge(
     }
 
     private inner class IsVisibleFn : OneArgFunction() {
-        // GameGuardian 里 overlay visibility 由 setVisible 控制,
-        // 这里暂返回 false(悬浮窗可见性由宿主统一管理,脚本层不做切换)。
-        override fun call(arg: LuaValue): LuaValue = FALSE
+        // 返回悬浮窗是否可见。arg 为 true 时忽略其他覆盖层精确检测(与 GG 兼容)。
+        override fun call(arg: LuaValue): LuaValue = LuaValue.valueOf(onIsVisible())
     }
 
     private inner class SetVisibleFn : OneArgFunction() {
-        // GameGuardian 里 overlay visibility 由 setVisible 控制,
-        // 这里空实现(悬浮窗可见性由宿主统一管理)。
-        override fun call(arg: LuaValue): LuaValue = NONE
+        // 设置悬浮窗可见/隐藏,参数为 true/false。
+        override fun call(arg: LuaValue): LuaValue {
+            onSetVisible(arg.toboolean())
+            return NONE
+        }
     }
 }

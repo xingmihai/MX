@@ -66,7 +66,7 @@ abstract class BaseDialog(
         }
     }
 
-    fun show() {
+    open fun show() {
         // 确保 setupDialog() 只在第一次 show() 时调用，此时子类属性已完全初始化
         if (!isDialogSetup) {
             setupDialog()

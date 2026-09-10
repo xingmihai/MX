@@ -38,6 +38,7 @@ import moe.fuqiuluo.mamu.script.ScriptResultItem
 import moe.fuqiuluo.mamu.script.ScriptUrlFetcher
 import moe.fuqiuluo.mamu.widget.NotificationOverlay
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -58,6 +59,10 @@ class ScriptDialog(
     // 避免脚本已结束后交互弹窗仍悬浮或在新会话才弹出。
     @Volatile
     private var activeInteractive: BaseDialog? = null
+    // 悬浮窗可见性:gg.isVisible 查询、gg.setVisible 切换。
+    // 默认 true,让事件驱动脚本(while true + isVisible)首次就能进入 Main 流程,
+    // 不用等用户手动呼出悬浮窗。
+    private val overlayVisible = AtomicBoolean(true)
     // 标记 ScriptDialog 已 release。release 后排队的 appendOutput 不应再创建新控制台,
     // 否则会复活一个孤立的悬浮窗(脚本会话已结束)。
     @Volatile
@@ -203,6 +208,13 @@ class ScriptDialog(
         // 旧 worker 并启动新会话,确保用户启动 B 时 B 优先执行而非被静默忽略。
         // 协程恢复时若会话已关闭或脚本已停止,直接放弃执行,避免启动孤立脚本与控制台。
         if (shouldBlockInteractive()) return
+        // 切换脚本前重置悬浮窗可见性,避免上一会话 setVisible(false) 泄漏到新会话,
+        // 导致事件驱动脚本(while true + isVisible)首次查询就拿到 false 而跳过 Main。
+        // 注意:不在这里排队 show() —— 若脚本立即 setVisible(false),排队的 show()
+        // 会在主线程恢复 overlayVisible=true 导致 hide() 的过期守卫把自己拒掉,
+        // 最终窗口停留在 visible 状态。dialog 可见性由 SearchController.showScriptDialog()
+        // 的 show() 负责(新/复用场景都经过它),executeSource 只重置 flag 保证状态一致。
+        overlayVisible.set(true)
         // 切换脚本前清空控制台并关闭上一会话遗留的交互弹窗(若 A 正在 alert/choice/
         // prompt 等待,启动 B 时应关闭它,否则 A 的弹窗会在 B 期间悬浮且不被跟踪)。
         dismissActiveInteractive()
@@ -259,7 +271,30 @@ class ScriptDialog(
             onMultiChoice = { request ->
                 runBlockingDialog(epoch) { showChoiceDialog(request, multiSelect = true, it) }
             },
-            onPrompt = { request -> runBlockingDialog(epoch) { showPromptDialog(request, it) } }
+            onPrompt = { request -> runBlockingDialog(epoch) { showPromptDialog(request, it) } },
+            onIsVisible = { overlayVisible.get() },
+            onSetVisible = { v ->
+                // 先写后校验(乐观模式):先写 overlayVisible,然后再检查 epoch/released。
+                // 旧会话 worker 可能在检查与写入之间被抢占,而新会话 incrementAndGet 已执行。
+                // 这种情况下旧会话的写入会覆盖新会话的状态,所以写入后必须再校验,
+                // 若 epoch 已变则撤销写入恢复默认值。
+                overlayVisible.set(v)
+                val stale = sessionEpoch.get() != epoch || released
+                if (stale) {
+                    overlayVisible.set(true)
+                } else {
+                    mainHandler.post {
+                        // 队列中的操作到主线程时再次校验:
+                        // 1. epoch 仍匹配(防止 post 执行前又切换了会话)
+                        // 2. overlayVisible 未被新操作覆盖(例如用户通过 show() 重开)
+                        if (sessionEpoch.get() != epoch || released) return@post
+                        if (overlayVisible.get() != v) return@post
+                        // 注意:Android Dialog.hide() 不更新 isShowing,
+                        // 所以不能用 isShowing 判断是否需要 show/hide —— 直接调用,幂等。
+                        if (v) show() else dialog.hide()
+                    }
+                }
+            }
         )
         host.execute(
             source = source,
@@ -431,6 +466,16 @@ class ScriptDialog(
     override fun dismiss() {
         release()
         super.dismiss()
+    }
+
+    /**
+     * 重写 show():无论由用户打开悬浮窗还是脚本内部 gg.setVisible(true) 触发,
+     * 都同步 overlayVisible = true,避免"窗口已显示但 isVisible() 仍返回 false"
+     * 的状态不同步(例如脚本先 setVisible(false) 后被用户重新打开)。
+     */
+    override fun show() {
+        overlayVisible.set(true)
+        super.show()
     }
 
     private class EntryAdapter(
