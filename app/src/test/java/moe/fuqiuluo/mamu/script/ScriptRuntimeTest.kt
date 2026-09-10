@@ -54,11 +54,25 @@ class ScriptRuntimeTest : FunSpec({
         ScriptFileNames.sanitize("bad name.lua") shouldBe null
     }
 
-    test("沙箱拒绝 luajava / io / os / dofile") {
+    test("沙箱拒绝 luajava / io / dofile,os 仅暴露安全子集") {
         val globals = SandboxGlobals.create(onPrint = {})
         globals.get("luajava").isnil() shouldBe true
         globals.get("io").isnil() shouldBe true
-        globals.get("os").isnil() shouldBe true
+        // os 不再是 nil,但危险函数被替换为 ForbiddenFunction:
+        globals.get("os").isnil() shouldBe false
+        val os = globals.get("os")
+        // 危险函数被屏蔽
+        runCatching { os.get("execute").invoke(globals, globals) }.exceptionOrNull()
+            .shouldNotBeNull().message.shouldContain("execute")
+        runCatching { os.get("remove").invoke(globals, globals) }.exceptionOrNull()
+            .shouldNotBeNull().message.shouldContain("remove")
+        runCatching { os.get("rename").invoke(globals, globals) }.exceptionOrNull()
+            .shouldNotBeNull().message.shouldContain("rename")
+        // os.exit 抛 ScriptExit 而非杀 JVM
+        runCatching { os.get("exit").invoke(globals, globals) }.exceptionOrNull()
+            .shouldNotBeNull().shouldBeInstanceOf<ScriptExit>()
+        // 安全函数可用:date
+        os.get("date").call()?.tojstring()?.isNotBlank() shouldBe true
         runCatching { globals.load("dofile('x.lua')").call() }.exceptionOrNull()
             .shouldNotBeNull()
             .message.shouldContain("dofile")
